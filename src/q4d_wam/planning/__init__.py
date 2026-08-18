@@ -1,6 +1,6 @@
 """Simple model-predictive control utilities."""
 
-from q4d_wam.planning.model_cost import CachedCubeCost
+from q4d_wam.planning.model_cost import CachedCubeCost, CachedTaskCost
 from q4d_wam.planning.mpc import (
     PlannerConfig,
     PlanResult,
@@ -11,6 +11,7 @@ from q4d_wam.planning.mpc import (
 
 __all__ = [
     "CachedCubeCost",
+    "CachedTaskCost",
     "PlanResult",
     "PlannerConfig",
     "cem",

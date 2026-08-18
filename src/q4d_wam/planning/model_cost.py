@@ -1,4 +1,4 @@
-"""Cached model adapter for a simple cube-centroid planning cost."""
+"""Cached model adapter for a task-adapter-selected object-centroid cost."""
 
 from __future__ import annotations
 
@@ -24,8 +24,8 @@ class _PreparedCost:
     goal_world_m: Tensor
 
 
-class CachedCubeCost:
-    """Encode a scene once and score many action sequences from its shared cache."""
+class CachedTaskCost:
+    """Encode a scene once and score candidates for a selected object and task goal."""
 
     def __init__(
         self,
@@ -128,11 +128,15 @@ class CachedCubeCost:
         prediction_world = (
             self.prepared.initial_world_m[None, :, None, :] + displacement
         )
-        final_cube = prediction_world[
+        final_object = prediction_world[
             :, self.prepared.score_indices, -1, :
         ].mean(dim=1)
         goal_cost = torch.linalg.vector_norm(
-            final_cube - self.prepared.goal_world_m[None], dim=-1
+            final_object - self.prepared.goal_world_m[None], dim=-1
         )
         action_cost = actions[..., :3].square().mean(dim=(1, 2))
         return goal_cost + self.action_penalty * action_cost
+
+
+# Backward-compatible public name used by the original PushCube reports and configs.
+CachedCubeCost = CachedTaskCost

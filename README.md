@@ -6,15 +6,16 @@ scene points, reuses cached scene features to evaluate candidate action sequence
 compares sparse Q4D prediction with action-free, retrieval, and parameter-matched dense
 baselines.
 
-The repository currently provides an end-to-end, tested pipeline for ManiSkill
-`PushCube-v1`: RGB-D collection, privileged rigid-track label generation, grouped dataset
-splits, training, trajectory evaluation, cache benchmarks, and closed-loop MPC.
+The repository provides an end-to-end, tested pipeline for ManiSkill `PushCube-v1` and
+task-adapter-based RGB-D collection and privileged rigid-track labels for `PullCube-v1`,
+`PickCube-v1`, `PlaceSphere-v1`, and `StackCube-v1`. The model-facing archive schema is
+shared across all five tasks.
 
-> **Research status:** the current result supports continuing to a larger controlled
-> experiment. It is not a multi-task or publication-ready system yet. In particular,
-> collection, labeling, and MPC contain PushCube-specific assumptions. Read
-> [Multi-task ManiSkill extension](#multi-task-maniskill-extension) before attempting to
-> change only `env_id`.
+> **Research status:** adapter integrity is verified for five tasks, and PushCube output
+> is exactly backward-compatible with the pre-adapter collector. This is not yet a
+> publication-ready multi-task result: joint training, strong task-solving branch
+> policies for the four added tasks, multi-seed evaluation, and statistical reporting
+> remain to be completed.
 
 ## What works today
 
@@ -27,10 +28,11 @@ splits, training, trajectory evaluation, cache benchmarks, and closed-loop MPC.
 | H=1/2/4/8 experiment matrix | Implemented |
 | Mixed-precision single-GPU training | Implemented |
 | Cached candidate-action decoding and N/M benchmark | Implemented |
-| Random-shooting and CEM MPC | Implemented for PushCube |
+| Random-shooting and CEM MPC | Uses task-provided object and goal semantics |
+| Five ManiSkill task adapters | Implemented and simulator-audited |
 | Distributed data-parallel training | Not implemented |
 | GPU-accelerated collection in `generate_point_tracks.py` | Not implemented; CPU backends are hard-coded |
-| Other ManiSkill tasks | Requires task adapters and new branch policies |
+| Joint multi-task training/evaluation | Not implemented |
 
 The original development machine used Python 3.12, PyTorch 2.11.0 + CUDA 12.8,
 ManiSkill 3.0.1, and an 8 GB RTX 4060. A native Linux GPU server is preferred for the
@@ -123,7 +125,7 @@ pytest -q
 ruff check .
 ```
 
-The current repository should report 39 passing tests. Then check ManiSkill separately:
+The current repository should report 44 passing tests. Then check ManiSkill separately:
 
 ```bash
 # State-only simulator check.
@@ -404,53 +406,26 @@ Do not launch multiple jobs that write to the same horizon/model output director
 
 ## 5. Multi-task ManiSkill extension
 
-Adding `PickCube-v1`, `StackCube-v1`, `PegInsertionSide-v1`, or another environment is
-not currently a TOML-only operation. The generic model-facing archive already supports
-point clouds, RGB, actions, and future tracks, but task-specific data production and
-planning must be separated from PushCube.
+The task-adapter layer now separates semantic entities, preparation, branch actions,
+tracked bodies, goals, and task-distance calculations from the collection and MPC
+scripts. See [ManiSkill task adapters](docs/task_adapters.md) for the five supported
+tasks, verification command, and exact scope of the real-simulator audit.
 
-Current PushCube assumptions include:
+Do not combine the five pilot datasets and treat that as a multi-task result. The
+remaining research work is to:
 
-- `env.unwrapped.obj` as the single manipulated object;
-- `env.unwrapped.goal_region` as the single goal;
-- a Panda end-effector delta-pose action with seven action dimensions;
-- `_approach_cube` and five hand-written push branches;
-- cube displacement and PushCube success as outcome labels;
-- object-centroid-to-goal distance as the MPC cost;
-- one object/robot/goal/static category assignment;
-- privileged segmentation for object query selection.
-
-Before collecting another task, introduce a task-adapter interface with at least:
-
-```text
-reset_and_prepare(env, seed) -> initial observation and simulator snapshot
-body_registry(env) -> entities and semantic categories
-branch_names() -> counterfactual action-policy names
-rollout_branch(env, branch, horizon) -> executable actions and observations
-outcome(env, rollout) -> task-specific success and diagnostics
-planning_queries(observation) -> non-privileged or explicitly oracle query points
-planning_cost(predicted_tracks, task_goal) -> candidate cost
-```
-
-Then make these changes:
-
-1. Move PushCube behavior out of `scripts/generate_point_tracks.py` and
-   `scripts/evaluate_mpc.py` into a `PushCubeAdapter`.
-2. Add one adapter per task and unit-test its body mapping, action shape, branch
-   diversity, success metric, and reset/replay behavior.
-3. Extend each fragment with `task_id`, robot/control-mode metadata, action semantics,
-   and adapter version. Keep privileged fields in the audit archive only.
-4. Decide how heterogeneous action spaces are represented: separate task-specific
-   heads, or padded actions with explicit masks. Do not silently mix incompatible action
-   dimensions.
-5. Support multiple manipulated objects and task-specific contact/event labels.
-6. Fit normalization on training data only, either per task or with a documented shared
-   scheme.
-7. Split by initial state and task. For generalization claims, add held-out object poses,
-   object instances, layouts, and possibly held-out tasks.
-8. Replace the PushCube centroid MPC objective with an adapter-provided objective.
-9. Run a 10-state pilot and complete geometry/label audits for every new task before a
-   large collection.
+1. Replace the four added tasks' smoke-test motions with reliable task-solving policies
+   and validate them across varied initial states.
+2. Store explicit task/control/action metadata in a combined dataset manifest and add
+   masks or separate heads before mixing incompatible action spaces.
+3. Define task-balanced training-only normalization and grouped train/validation/test
+   splits, including held-out poses, layouts, objects, or tasks where claimed.
+4. Add task/contact-specific diagnostics and support more complex multi-object tracking
+   where required.
+5. Run per-task and joint training with multiple seeds, then evaluate matched
+   closed-loop planning episodes and confidence intervals.
+6. Replace privileged object segmentation with a deployable perception condition, or
+   clearly report it as an oracle-query result.
 
 A practical progression is:
 
@@ -462,8 +437,9 @@ PushCube adapter parity
   -> held-out configuration/task evaluation
 ```
 
-Keep per-task datasets and reports separate until each adapter passes independently.
-Only then create a combined manifest for multi-task training.
+Keep per-task datasets and reports separate through the larger pilot stage. Create a
+combined manifest only after every task has reliable success behavior and passes its
+geometry and label audits.
 
 ## 6. Publication-grade experiment protocol
 

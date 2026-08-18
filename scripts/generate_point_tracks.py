@@ -28,6 +28,12 @@ from q4d_wam.labels import (
     reconstruct_rigid_tracks,
     stratified_point_indices,
 )
+from q4d_wam.tasks import TaskAdapter, get_task_adapter
+from q4d_wam.tasks.adapters import (
+    COUNTERFACTUAL_BRANCHES,
+    make_delta_pose_action,
+    move_tcp_to,
+)
 
 CATEGORY_NAMES = {
     CATEGORY_STATIC: "static",
@@ -36,10 +42,6 @@ CATEGORY_NAMES = {
     CATEGORY_GOAL: "goal",
     CATEGORY_UNKNOWN: "unknown",
 }
-
-COUNTERFACTUAL_BRANCHES = ("success", "perturbed", "no_op", "failure")
-SCALED_BRANCHES = ("success", "weak", "off_target", "failure", "no_op")
-
 
 @dataclass(frozen=True)
 class LabelConfig:
@@ -80,15 +82,26 @@ def _pose_matrix(entity: Any) -> torch.Tensor:
     return torch.as_tensor(entity.pose.to_transformation_matrix(), dtype=torch.float32)
 
 
-def _build_body_registry(env: Any) -> list[BodyEntry]:
+def _entity_segmentation_ids(entity: Any) -> set[int]:
+    values = torch.as_tensor(entity.per_scene_id).detach().cpu().reshape(-1)
+    return {int(value) for value in values}
+
+
+def _build_body_registry(
+    env: Any, adapter: TaskAdapter | None = None
+) -> list[BodyEntry]:
     unwrapped = env.unwrapped
+    adapter = adapter or get_task_adapter(env.spec.id)
     robot_ids = {
         int(segmentation_id)
         for link in unwrapped.agent.robot.links
         for segmentation_id in link.per_scene_id
     }
-    object_id = int(unwrapped.obj.per_scene_id[0])
-    goal_id = int(unwrapped.goal_region.per_scene_id[0])
+    semantic_categories = {
+        segmentation_id: semantic.category
+        for semantic in adapter.semantic_entities(env)
+        for segmentation_id in _entity_segmentation_ids(semantic.entity)
+    }
     entries = []
     for entity in unwrapped.scene.sub_scenes[0].entities:
         component_names = {type(component).__name__ for component in entity.components}
@@ -97,10 +110,8 @@ def _build_body_registry(env: Any) -> list[BodyEntry]:
         segmentation_id = int(entity.per_scene_id)
         if segmentation_id in robot_ids:
             category = CATEGORY_ROBOT
-        elif segmentation_id == object_id:
-            category = CATEGORY_OBJECT
-        elif segmentation_id == goal_id:
-            category = CATEGORY_GOAL
+        elif segmentation_id in semantic_categories:
+            category = semantic_categories[segmentation_id]
         else:
             category = CATEGORY_STATIC
         entries.append(BodyEntry(segmentation_id, entity.name, category, entity))
@@ -112,39 +123,24 @@ def _body_poses(entries: list[BodyEntry]) -> torch.Tensor:
 
 
 def _make_action(env: Any, target_world: torch.Tensor, gripper: float = -1.0) -> np.ndarray:
-    action = np.zeros(env.action_space.shape, dtype=np.float32)
-    tcp_world = env.unwrapped.agent.tcp.pose.p[0].detach().cpu()
-    delta_world = target_world.detach().cpu() - tcp_world
-    # Panda normalized actions map [-1, 1] to [-0.1, 0.1] metres.
-    action[..., :3] = np.clip(delta_world.numpy() / 0.1, -1.0, 1.0)
-    action[..., -1] = gripper
-    return action
+    return make_delta_pose_action(env, target_world, gripper=gripper)
 
 
 def _move_to(env: Any, target_world: torch.Tensor, max_steps: int) -> tuple[Any, int]:
-    observation = None
-    for step in range(max_steps):
-        action = _make_action(env, target_world)
-        observation, _, _, _, _ = env.step(action)
-        tcp_world = env.unwrapped.agent.tcp.pose.p[0].detach().cpu()
-        if torch.linalg.vector_norm(tcp_world - target_world.detach().cpu()) < 0.006:
-            return observation, step + 1
-    return observation, max_steps
+    return move_tcp_to(env, target_world, max_steps, gripper=-1.0)
 
 
 def _approach_cube(env: Any, max_steps: int) -> tuple[Any, int]:
-    cube = env.unwrapped.obj.pose.p[0].detach().cpu()
-    above = cube + torch.tensor([-0.05, 0.0, 0.08])
-    observation, first_steps = _move_to(env, above, max_steps // 2)
-    behind = cube + torch.tensor([-0.05, 0.0, 0.0])
-    observation, second_steps = _move_to(env, behind, max_steps - first_steps)
-    return observation, first_steps + second_steps
+    return get_task_adapter("PushCube-v1").prepare(env, max_steps)
 
 
-def _prepare_initial_state(env: Any, seed: int, max_steps: int) -> InitialState:
+def _prepare_initial_state(
+    env: Any, seed: int, max_steps: int, adapter: TaskAdapter | None = None
+) -> InitialState:
     """Reset and approach once, then snapshot the identical branch point."""
+    adapter = adapter or get_task_adapter(env.spec.id)
     env.reset(seed=seed)
-    observation, approach_steps = _approach_cube(env, max_steps)
+    observation, approach_steps = adapter.prepare(env, max_steps)
     if observation is None:
         raise RuntimeError("approach controller produced no observation")
     return InitialState(
@@ -159,6 +155,29 @@ def _category_tensor(segmentation_ids: torch.Tensor, entries: list[BodyEntry]) -
     for entry in entries:
         categories[segmentation_ids == entry.segmentation_id] = entry.category
     return categories
+
+
+def _select_camera_name(
+    observation: dict[str, Any],
+    env: Any | None = None,
+    adapter: TaskAdapter | None = None,
+) -> str:
+    """Select the camera with the most visible primary-object pixels."""
+
+    sensor_data = observation["sensor_data"]
+    if env is not None and adapter is not None:
+        object_ids = torch.tensor(
+            sorted(_entity_segmentation_ids(adapter.primary_object(env)))
+        )
+        visible_counts = {
+            name: int(torch.isin(sensor["segmentation"], object_ids).sum())
+            for name, sensor in sensor_data.items()
+        }
+        maximum = max(visible_counts.values(), default=0)
+        if maximum > 0:
+            best = [name for name, count in visible_counts.items() if count == maximum]
+            return "base_camera" if "base_camera" in best else best[0]
+    return "base_camera" if "base_camera" in sensor_data else next(iter(sensor_data))
 
 
 def _contact_region(
@@ -263,25 +282,25 @@ def _generate_episode(
     output_dir: Path,
     initial_state: InitialState | None = None,
     enforce_outcome_checks: bool = True,
+    adapter: TaskAdapter | None = None,
 ) -> dict[str, Any]:
-    known_branches = set(COUNTERFACTUAL_BRANCHES) | set(SCALED_BRANCHES)
-    if branch not in known_branches:
-        raise ValueError(f"unknown counterfactual branch: {branch}")
+    adapter = adapter or get_task_adapter(settings["simulation"]["env_id"])
+    adapter.validate_branch(branch)
     if initial_state is None:
         initial_state = _prepare_initial_state(
-            env, seed, label_config.approach_max_steps
+            env, seed, label_config.approach_max_steps, adapter
         )
     else:
         env.unwrapped.set_state_dict(copy.deepcopy(initial_state.simulator_state))
     observation = initial_state.observation
     approach_steps = initial_state.approach_steps
 
-    entries = _build_body_registry(env)
+    entries = _build_body_registry(env, adapter)
     body_segmentation_ids = torch.tensor([entry.segmentation_id for entry in entries])
     body_categories = torch.tensor([entry.category for entry in entries])
     body_names = [entry.name for entry in entries]
 
-    camera_name = next(iter(observation["sensor_data"]))
+    camera_name = _select_camera_name(observation, env, adapter)
     sensor = observation["sensor_data"][camera_name]
     calibration = observation["sensor_param"][camera_name]
     depth_mm = sensor["depth"]
@@ -327,47 +346,44 @@ def _generate_episode(
         xyz0, point_segmentation_ids, body_segmentation_ids, initial_body_poses
     )
     body_pose_sequence = [initial_body_poses]
-    cube_centers = [env.unwrapped.obj.pose.p[0].detach().cpu().clone()]
+    tracked_entities = adapter.tracked_entities(env)
+    tracked_entity_names = tuple(entity.name for entity in tracked_entities)
+    tracked_entity_centers = [
+        torch.stack(
+            [entity.pose.p[0].detach().cpu().float().clone() for entity in tracked_entities]
+        )
+    ]
+    primary_object_centers = [adapter.primary_object_position(env)]
     actions = []
-    goal = env.unwrapped.goal_region.pose.p[0].detach().cpu()
-    cube_start = env.unwrapped.obj.pose.p[0].detach().cpu().clone()
-    rng = np.random.default_rng(seed + 10_000)
-    perturb_sign = -1.0 if state_index % 2 else 1.0
-    lateral_offset = perturb_sign * float(rng.uniform(0.03, 0.06))
-    success_lateral_jitter = 0.0
-    success_standoff = 0.12
-    weak_scale = float(rng.uniform(0.30, 0.50))
-    weak_steps = int(rng.integers(3, max(4, label_config.horizon // 2 + 1)))
-    off_target_offset = perturb_sign * float(rng.uniform(0.18, 0.25))
-    failure_offset = float(rng.uniform(-0.04, 0.04))
-    branch_targets = {
-        "success": goal
-        + torch.tensor([-success_standoff, success_lateral_jitter, 0.0]),
-        "perturbed": goal + torch.tensor([-0.12, lateral_offset, 0.0]),
-        "weak": goal + torch.tensor([-success_standoff, success_lateral_jitter, 0.0]),
-        "off_target": cube_start
-        + torch.tensor([float(rng.uniform(0.05, 0.08)), off_target_offset, 0.0]),
-        "failure": cube_start + torch.tensor([-0.16, failure_offset, 0.0]),
-    }
+    branch_plan = adapter.make_branch_plan(
+        env,
+        branch,
+        label_config.horizon,
+        seed=seed,
+        state_index=state_index,
+    )
     final_info: dict[str, Any] = {}
     success_reached = False
     for time_index in range(label_config.horizon):
-        if (
-            branch == "no_op"
-            or (branch == "success" and success_reached)
-            or (branch == "weak" and time_index >= weak_steps)
-        ):
-            action = np.zeros(env.action_space.shape, dtype=np.float32)
-            action[..., -1] = -1.0
-        else:
-            action = _make_action(env, branch_targets[branch])
-            if branch == "weak":
-                action[..., :3] *= weak_scale
+        action = adapter.action(
+            env,
+            branch_plan,
+            time_index,
+            success_reached=success_reached,
+        )
         _, _, _, _, final_info = env.step(action)
         success_reached |= bool(torch.as_tensor(final_info.get("success", False)).any())
         actions.append(torch.from_numpy(action.reshape(-1)).clone())
         body_pose_sequence.append(_body_poses(entries))
-        cube_centers.append(env.unwrapped.obj.pose.p[0].detach().cpu().clone())
+        primary_object_centers.append(adapter.primary_object_position(env))
+        tracked_entity_centers.append(
+            torch.stack(
+                [
+                    entity.pose.p[0].detach().cpu().float().clone()
+                    for entity in tracked_entities
+                ]
+            )
+        )
 
     body_pose_sequence_tensor = torch.stack(body_pose_sequence)
     tracks = reconstruct_rigid_tracks(
@@ -375,7 +391,8 @@ def _generate_episode(
     )
     contact = _contact_region(tracks, point_categories, label_config.contact_distance_m)
     actions_tensor = torch.stack(actions)
-    cube_centers_tensor = torch.stack(cube_centers)
+    primary_object_centers_tensor = torch.stack(primary_object_centers)
+    tracked_entity_centers_tensor = torch.stack(tracked_entity_centers, dim=1)
     task_success_final = bool(torch.as_tensor(final_info.get("success", False)).any())
 
     static_mask = point_categories == CATEGORY_STATIC
@@ -386,7 +403,9 @@ def _generate_episode(
         if static_mask.any()
         else torch.zeros(1)
     )
-    cube_displacement = torch.linalg.vector_norm(cube_centers_tensor[-1] - cube_centers_tensor[0])
+    primary_object_displacement = torch.linalg.vector_norm(
+        primary_object_centers_tensor[-1] - primary_object_centers_tensor[0]
+    )
     initial_reconstruction_error = torch.linalg.vector_norm(tracks[:, 0] - xyz0, dim=-1)
 
     group_id = f"state_{state_index:06d}"
@@ -417,7 +436,10 @@ def _generate_episode(
         body_pose_sequence_world=_numpy(body_pose_sequence_tensor),
         tracks_world_m=_numpy(tracks),
         contact_region=_numpy(contact),
-        cube_centers_world_m=_numpy(cube_centers_tensor),
+        cube_centers_world_m=_numpy(primary_object_centers_tensor),
+        primary_object_centers_world_m=_numpy(primary_object_centers_tensor),
+        tracked_entity_centers_world_m=_numpy(tracked_entity_centers_tensor),
+        tracked_entity_names=np.asarray(tracked_entity_names),
     )
 
     counts = {
@@ -430,22 +452,17 @@ def _generate_episode(
         "branch": branch,
         "seed": seed,
         "environment": settings["simulation"]["env_id"],
+        "task_adapter": adapter.name,
         "approach_steps": approach_steps,
         "horizon": label_config.horizon,
         "num_points": len(xyz0),
         "category_counts": counts,
         "contact_region_points": int(contact.sum()),
-        "cube_displacement_m": float(cube_displacement),
+        "cube_displacement_m": float(primary_object_displacement),
+        "primary_object_displacement_m": float(primary_object_displacement),
         "task_success": task_success_final,
         "task_success_ever": success_reached,
-        "lateral_perturbation_m": lateral_offset if branch == "perturbed" else 0.0,
-        "success_lateral_jitter_m": success_lateral_jitter,
-        "success_standoff_m": success_standoff,
-        "weak_action_scale": weak_scale if branch == "weak" else 1.0,
-        "weak_active_steps": weak_steps if branch == "weak" else 0,
-        "off_target_lateral_offset_m": (
-            off_target_offset if branch == "off_target" else 0.0
-        ),
+        **branch_plan.metadata,
         "object_point_final_displacement_mean_m": float(
             torch.linalg.vector_norm(
                 tracks[object_mask, -1] - tracks[object_mask, 0], dim=-1
@@ -589,6 +606,8 @@ def _summary(
 ) -> dict[str, Any]:
     return {
         "profile": profile,
+        "environments": sorted({record["environment"] for record in records}),
+        "task_adapters": sorted({record["task_adapter"] for record in records}),
         "requested_states": requested_states,
         "completed_states": len(groups),
         "complete": complete,
@@ -598,6 +617,11 @@ def _summary(
         "passed_groups": sum(group["passed"] for group in groups),
         "mean_cube_displacement_m": float(
             np.mean([record["cube_displacement_m"] for record in records])
+        ),
+        "mean_primary_object_displacement_m": float(
+            np.mean(
+                [record["primary_object_displacement_m"] for record in records]
+            )
         ),
         "branch_counts": {
             branch: sum(record["branch"] == branch for record in records)
@@ -615,6 +639,18 @@ def _summary(
                 np.mean(
                     [
                         record["cube_displacement_m"]
+                        for record in records
+                        if record["branch"] == branch
+                    ]
+                )
+            )
+            for branch in branches
+        },
+        "branch_mean_primary_object_displacement_m": {
+            branch: float(
+                np.mean(
+                    [
+                        record["primary_object_displacement_m"]
                         for record in records
                         if record["branch"] == branch
                     ]
@@ -669,7 +705,8 @@ def main() -> None:
     base_seed = args.seed if args.seed is not None else int(settings["project"]["seed"])
     output_dir = args.output_dir or Path(settings["project"]["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
-    branches = SCALED_BRANCHES if args.profile == "scaled" else COUNTERFACTUAL_BRANCHES
+    adapter = get_task_adapter(settings["simulation"]["env_id"])
+    branches = adapter.branch_names(args.profile)
 
     software_icd = Path("/usr/share/vulkan/icd.d/lvp_icd.json")
     if software_icd.exists():
@@ -696,7 +733,10 @@ def main() -> None:
             )
             if group_records is None:
                 initial_state = _prepare_initial_state(
-                    env, base_seed + state_index, label_config.approach_max_steps
+                    env,
+                    base_seed + state_index,
+                    label_config.approach_max_steps,
+                    adapter,
                 )
                 group_records = []
                 for branch in branches:
@@ -710,6 +750,7 @@ def main() -> None:
                         output_dir,
                         initial_state,
                         enforce_outcome_checks=args.profile != "scaled",
+                        adapter=adapter,
                     )
                     records.append(record)
                     group_records.append(record)

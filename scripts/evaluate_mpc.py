@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate random-shooting and CEM MPC on PushCube with matched time budgets."""
+"""Evaluate random-shooting and CEM MPC through a task adapter."""
 
 from __future__ import annotations
 
@@ -15,9 +15,9 @@ import gymnasium as gym
 import numpy as np
 import torch
 from generate_point_tracks import (
-    _approach_cube,
     _build_body_registry,
     _category_tensor,
+    _select_camera_name,
 )
 from torch import Tensor
 
@@ -31,6 +31,7 @@ from q4d_wam.labels import (
 )
 from q4d_wam.models import DensePointFutureModel, MicroQ4D, NoActionTrajectoryModel
 from q4d_wam.planning import CachedCubeCost, PlannerConfig, cem, random_shooting
+from q4d_wam.tasks import TaskAdapter, get_task_adapter
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
@@ -41,15 +42,16 @@ def _read_toml(path: Path) -> dict[str, Any]:
 def _scene_from_observation(
     observation: dict[str, Any],
     env: Any,
+    adapter: TaskAdapter,
     *,
     num_points: int,
     max_depth_m: float,
     quotas: dict[int, int],
     object_query_limit: int,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    entries = _build_body_registry(env)
+    entries = _build_body_registry(env, adapter)
     body_ids = torch.tensor([entry.segmentation_id for entry in entries])
-    camera_name = next(iter(observation["sensor_data"]))
+    camera_name = _select_camera_name(observation, env, adapter)
     sensor = observation["sensor_data"][camera_name]
     calibration = observation["sensor_param"][camera_name]
     points_cv, valid = backproject_depth_cv(
@@ -74,7 +76,7 @@ def _scene_from_observation(
         raise RuntimeError("current observation contains no sampled cube points")
     if len(object_indices) > object_query_limit:
         object_indices = object_indices[:object_query_limit]
-    goal_world = env.unwrapped.goal_region.pose.p[0].detach().cpu().float()
+    goal_world = adapter.goal_world_m(env)
     return scene_world.cpu(), scene_rgb.cpu(), object_indices.cpu(), goal_world
 
 
@@ -158,6 +160,7 @@ def _condition_key(model: str, method: str, budget_ms: float, seed: int) -> str:
 @torch.no_grad()
 def _warmup_observed_scene(
     env: Any,
+    adapter: TaskAdapter,
     models: dict[str, MicroQ4D | NoActionTrajectoryModel],
     normalization: NormalizationStats,
     raw: dict[str, Any],
@@ -168,12 +171,13 @@ def _warmup_observed_scene(
     model_config = raw["model"]
     planning = raw["planning"]
     env.reset(seed=int(planning["seed"]))
-    observation, _ = _approach_cube(env, int(simulation["approach_max_steps"]))
+    observation, _ = adapter.prepare(env, int(simulation["approach_max_steps"]))
     if observation is None:
         raise RuntimeError("warm-up approach did not return an observation")
     scene_world, scene_rgb, object_indices, goal_world = _scene_from_observation(
         observation,
         env,
+        adapter,
         num_points=int(model_config["scene_points"]),
         max_depth_m=float(simulation["max_depth_m"]),
         quotas={
@@ -221,12 +225,13 @@ def _episode(
     budget_ms: float,
     episode_seed: int,
     device: torch.device,
+    adapter: TaskAdapter,
 ) -> dict[str, Any]:
     model_config = raw["model"]
     simulation = raw["simulation"]
     planning = raw["planning"]
     env.reset(seed=episode_seed)
-    observation, approach_steps = _approach_cube(
+    observation, approach_steps = adapter.prepare(
         env, int(simulation["approach_max_steps"])
     )
     if observation is None:
@@ -251,15 +256,14 @@ def _episode(
     cycles = []
     success = False
     termination_reason = "control_cycle_limit"
-    initial_cube = env.unwrapped.obj.pose.p[0].detach().cpu().float()
-    initial_goal = env.unwrapped.goal_region.pose.p[0].detach().cpu().float()
-    initial_distance = float(torch.linalg.vector_norm(initial_cube - initial_goal))
+    initial_distance = adapter.task_distance_m(env)
     for cycle in range(int(simulation["control_cycles"])):
         try:
             scene_world, scene_rgb, object_indices, goal_world = (
                 _scene_from_observation(
                     observation,
                     env,
+                    adapter,
                     num_points=int(model_config["scene_points"]),
                     max_depth_m=float(simulation["max_depth_m"]),
                     quotas={
@@ -293,8 +297,7 @@ def _episode(
         action = result.first_action.detach().cpu().numpy().astype(np.float32)
         observation, _, _, _, info = env.step(action)
         success = bool(torch.as_tensor(info.get("success", False)).any())
-        cube = env.unwrapped.obj.pose.p[0].detach().cpu().float()
-        goal = env.unwrapped.goal_region.pose.p[0].detach().cpu().float()
+        task_distance = adapter.task_distance_m(env)
         cycles.append(
             {
                 "cycle": cycle,
@@ -304,7 +307,8 @@ def _episode(
                 "batches_evaluated": result.batches_evaluated,
                 "predicted_cost": result.predicted_cost,
                 "executed_first_action": action.tolist(),
-                "cube_goal_distance_m": float(torch.linalg.vector_norm(cube - goal)),
+                "cube_goal_distance_m": task_distance,
+                "task_distance_m": task_distance,
                 "object_query_points": len(object_indices),
                 "scene_encodes": 1,
                 "success": success,
@@ -313,9 +317,9 @@ def _episode(
         if success:
             termination_reason = "success"
             break
-    final_cube = env.unwrapped.obj.pose.p[0].detach().cpu().float()
-    final_goal = env.unwrapped.goal_region.pose.p[0].detach().cpu().float()
+    final_distance = adapter.task_distance_m(env)
     return {
+        "task_adapter": adapter.name,
         "model": model_name,
         "method": method,
         "budget_ms": budget_ms,
@@ -325,9 +329,9 @@ def _episode(
         "termination_reason": termination_reason,
         "control_cycles": len(cycles),
         "initial_cube_goal_distance_m": initial_distance,
-        "final_cube_goal_distance_m": float(
-            torch.linalg.vector_norm(final_cube - final_goal)
-        ),
+        "final_cube_goal_distance_m": final_distance,
+        "initial_task_distance_m": initial_distance,
+        "final_task_distance_m": final_distance,
         "cycles": cycles,
     }
 
@@ -444,6 +448,7 @@ def main() -> None:
         os.environ.setdefault("VK_ICD_FILENAMES", str(software_icd))
     import mani_skill.envs  # noqa: F401
 
+    adapter = get_task_adapter(raw["simulation"]["env_id"])
     env = gym.make(
         raw["simulation"]["env_id"],
         num_envs=1,
@@ -456,7 +461,7 @@ def main() -> None:
     # Simulator initialization can lazily initialize GPU-adjacent libraries, so
     # warm model inference only after the environment exists.
     _warmup_models(models, normalization, raw, device)
-    _warmup_observed_scene(env, models, normalization, raw, device)
+    _warmup_observed_scene(env, adapter, models, normalization, raw, device)
     try:
         for model_name in models_requested:
             for method in methods:
@@ -479,6 +484,7 @@ def main() -> None:
                             budget_ms=budget,
                             episode_seed=episode_seed,
                             device=device,
+                            adapter=adapter,
                         )
                         progress[key] = record
                         _write_json_atomic(progress_path, progress)
@@ -496,17 +502,25 @@ def main() -> None:
     expected = len(models_requested) * len(methods) * len(budgets) * episodes
     report = {
         "protocol": {
+            "environment": raw["simulation"]["env_id"],
+            "task_adapter": adapter.name,
             "models": models_requested,
             "methods": methods,
             "budgets_ms": budgets,
             "episodes_per_condition": episodes,
             "seeds": [int(planning["seed"]) + index for index in range(episodes)],
-            "cost": "final visible-cube centroid distance to goal plus action penalty",
+            "cost": (
+                "final visible primary-object centroid distance to task goal plus "
+                "action penalty"
+            ),
             "predictor_inputs": (
                 "normalized scene XYZ/RGB; action-conditioned models additionally "
                 "receive executable action sequences"
             ),
-            "privileged_cost_only": "segmentation selects identical cube points for both models",
+            "privileged_cost_only": (
+                "task-adapter semantics and segmentation select identical primary-object "
+                "points for both models"
+            ),
             "receding_horizon": "execute first action, reobserve, and replan",
         },
         "conditions": summary,

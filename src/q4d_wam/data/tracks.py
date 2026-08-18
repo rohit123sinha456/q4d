@@ -1,4 +1,4 @@
-"""Dataset loading for compact PushCube persistent-trajectory fragments."""
+"""Dataset loading for compact persistent-trajectory fragments."""
 
 from __future__ import annotations
 
@@ -44,6 +44,9 @@ PRIVILEGED_KEYS = frozenset(
         "local_xyz_m",
         "point_categories",
         "point_segmentation_ids",
+        "primary_object_centers_world_m",
+        "tracked_entity_centers_world_m",
+        "tracked_entity_names",
         "tracks_world_m",
     }
 )
