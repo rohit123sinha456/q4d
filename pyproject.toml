@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=78,<79"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "q4d-wam"
+version = "0.1.0"
+description = "Incremental research implementation of a queryable 4D world action model"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Proprietary research code" }
+dependencies = []
+
+[project.optional-dependencies]
+sim = ["mani_skill==3.0.1"]
+dev = ["pytest==8.4.2", "ruff==0.12.10"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+

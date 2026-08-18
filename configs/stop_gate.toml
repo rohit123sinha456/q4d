@@ -1,0 +1,13 @@
+[paths]
+no_action_report = "artifacts/experiments/pushcube_scale_v1/h8/no_action/report.json"
+q4d_report = "artifacts/experiments/pushcube_scale_v1/h8/micro_q4d/report.json"
+dense_report = "artifacts/experiments/pushcube_scale_v1/h8/dense/report.json"
+cache_grid_report = "artifacts/experiments/pushcube_scale_v1/h8/n_m_scaling.json"
+mpc_report = "artifacts/planning/stop_gate_mpc/report.json"
+output = "artifacts/decisions/mvp_stop_continue/report.json"
+
+[thresholds]
+cache_min_speedup = 1.0
+dense_overall_ade_ratio_max = 1.25
+dense_task_ade_ratio_max = 1.10
+mpc_min_success_rate_margin = 0.20

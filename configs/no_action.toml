@@ -1,0 +1,27 @@
+[paths]
+data_config = "configs/data.toml"
+split_manifest = "artifacts/datasets/pushcube_counterfactual_v1/splits.json"
+normalization = "artifacts/datasets/pushcube_counterfactual_v1/normalization.json"
+reference_baselines = "artifacts/evaluation/counterfactual_non_neural_baselines.json"
+output_dir = "artifacts/models/no_action_v1"
+
+[model]
+width = 128
+horizon = 8
+
+[training]
+seed = 7
+epochs = 120
+patience = 25
+batch_size = 8
+num_workers = 2
+learning_rate = 0.001
+weight_decay = 0.0001
+gradient_clip_norm = 1.0
+amp = true
+queries = 32
+
+[evaluation]
+batch_size = 2
+queries = 256
+moving_threshold_m = 0.001

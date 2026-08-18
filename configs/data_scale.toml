@@ -1,0 +1,15 @@
+[dataset]
+root = "artifacts/datasets/pushcube_scale_v1"
+split_seed = 1701
+train_fraction = 0.8
+validation_fraction = 0.1
+test_fraction = 0.1
+num_queries = 64
+cache_size = 10000
+
+[loader]
+batch_size = 8
+num_workers = 2
+prefetch_factor = 2
+pin_memory = true
+persistent_workers = true

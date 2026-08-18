@@ -1,0 +1,138 @@
+"""Cached model adapter for a simple cube-centroid planning cost."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import torch
+from torch import Tensor
+
+from q4d_wam.data import NormalizationStats
+from q4d_wam.models import (
+    DensePointFutureModel,
+    MicroQ4D,
+    NoActionTrajectoryModel,
+    QueryCache,
+)
+
+
+@dataclass(frozen=True)
+class _PreparedCost:
+    query_cache: QueryCache
+    initial_world_m: Tensor
+    score_indices: Tensor
+    goal_world_m: Tensor
+
+
+class CachedCubeCost:
+    """Encode a scene once and score many action sequences from its shared cache."""
+
+    def __init__(
+        self,
+        model: MicroQ4D | NoActionTrajectoryModel,
+        normalization: NormalizationStats,
+        *,
+        dense_output: bool,
+        action_penalty: float = 1e-4,
+        use_amp: bool = True,
+    ):
+        if action_penalty < 0:
+            raise ValueError("action_penalty cannot be negative")
+        self.model = model
+        self.normalization = normalization
+        self.dense_output = dense_output
+        self.action_penalty = action_penalty
+        self.use_amp = use_amp
+        self.prepared: _PreparedCost | None = None
+        self.scene_encode_count = 0
+
+    @property
+    def device(self) -> torch.device:
+        return next(self.model.parameters()).device
+
+    @torch.no_grad()
+    def prepare(
+        self,
+        scene_xyz_world_m: Tensor,
+        scene_rgb: Tensor,
+        object_indices: Tensor,
+        goal_world_m: Tensor,
+    ) -> None:
+        if scene_xyz_world_m.ndim != 2 or scene_xyz_world_m.shape[-1] != 3:
+            raise ValueError("scene_xyz_world_m must have shape [N, 3]")
+        if scene_rgb.shape != scene_xyz_world_m.shape:
+            raise ValueError("scene_rgb must match scene XYZ")
+        if object_indices.ndim != 1 or object_indices.numel() == 0:
+            raise ValueError("object_indices must select at least one scene point")
+        if goal_world_m.shape != (3,):
+            raise ValueError("goal_world_m must have shape [3]")
+        device = self.device
+        stats = self.normalization
+        scene_world = scene_xyz_world_m.to(device)
+        normalized_scene = (
+            scene_world - stats.xyz_mean_m.to(device)
+        ) / stats.xyz_scale_m.to(device)
+        rgb = scene_rgb.to(device)
+        indices = object_indices.to(device=device, dtype=torch.long)
+        with torch.autocast(
+            device_type=device.type,
+            dtype=torch.float16,
+            enabled=self.use_amp and device.type == "cuda",
+        ):
+            scene_cache = self.model.encode_scene(
+                normalized_scene[None], rgb[None]
+            )
+            if self.dense_output:
+                if not isinstance(self.model, DensePointFutureModel):
+                    raise TypeError("dense output requires DensePointFutureModel")
+                query_cache = self.model.encode_dense_queries(scene_cache)
+                initial_world = scene_world
+                score_indices = indices
+            else:
+                query_cache = self.model.encode_query_indices(
+                    scene_cache, indices[None]
+                )
+                initial_world = scene_world[indices]
+                score_indices = torch.arange(len(indices), device=device)
+        self.prepared = _PreparedCost(
+            query_cache,
+            initial_world,
+            score_indices,
+            goal_world_m.to(device),
+        )
+        self.scene_encode_count += 1
+
+    @torch.no_grad()
+    def __call__(self, candidate_actions: Tensor) -> Tensor:
+        if self.prepared is None:
+            raise RuntimeError("prepare must be called once before candidate evaluation")
+        device = self.device
+        actions = candidate_actions.to(device)
+        stats = self.normalization
+        normalized_actions = (
+            actions - stats.action_mean.to(device)
+        ) / stats.action_scale.to(device)
+        with torch.autocast(
+            device_type=device.type,
+            dtype=torch.float16,
+            enabled=self.use_amp and device.type == "cuda",
+        ):
+            normalized_displacement = self.model.predict_candidates(
+                self.prepared.query_cache, normalized_actions[None]
+            )[0]
+        displacement = (
+            normalized_displacement.float()
+            * stats.displacement_scale_m.to(device)
+            + stats.displacement_mean_m.to(device)
+        )
+        prediction_world = (
+            self.prepared.initial_world_m[None, :, None, :] + displacement
+        )
+        final_cube = prediction_world[
+            :, self.prepared.score_indices, -1, :
+        ].mean(dim=1)
+        goal_cost = torch.linalg.vector_norm(
+            final_cube - self.prepared.goal_world_m[None], dim=-1
+        )
+        action_cost = actions[..., :3].square().mean(dim=(1, 2))
+        return goal_cost + self.action_penalty * action_cost

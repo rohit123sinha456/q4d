@@ -1,0 +1,9 @@
+[paths]
+model_config = "configs/micro_q4d_8gb.toml"
+checkpoint = "artifacts/models/micro_q4d_v1/best.pt"
+output = "artifacts/environment/memory_8gb_report.json"
+
+[audit]
+optimizer_steps = 6
+warmup_steps = 2
+maximum_steady_state_growth_mib = 8

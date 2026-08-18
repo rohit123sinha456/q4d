@@ -1,0 +1,11 @@
+[evaluation]
+data_config = "configs/data.toml"
+split_manifest = "artifacts/datasets/pushcube_counterfactual_v1/splits.json"
+normalization = "artifacts/datasets/pushcube_counterfactual_v1/normalization.json"
+output = "artifacts/evaluation/counterfactual_non_neural_baselines.json"
+split = "test"
+evaluation_queries = 256
+knn_neighbors = 3
+moving_threshold_m = 0.001
+batch_size = 2
+num_workers = 0
