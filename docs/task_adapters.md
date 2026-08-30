@@ -73,9 +73,41 @@ groups, visible robot/object points, distinct action chunks, consistent schemas,
 identical sibling inputs, and meaningful primary-object motion. The PushCube candidate
 matches the pre-adapter reference exactly for all model-facing arrays.
 
-The short horizon-eight smoke policies for PullCube, PickCube, PlaceSphere, and
-StackCube move the intended objects but do not reliably complete their full task. They
-are data-collection probes, not expert demonstrations. Before claiming multi-task
-results, implement and validate reliable task-solving policies, collect many independent
-states, define task-balanced splits and normalization, train multiple seeds, and report
-per-task and macro-averaged planning metrics with confidence intervals.
+The short horizon-eight policies for PullCube, PickCube, PlaceSphere, and StackCube now
+complete their task in the deterministic one-state real-simulator audit. This is a
+readiness check, not evidence of reliability across randomized initial states or expert
+demonstration quality. Before claiming multi-task results, validate the policies on a
+larger pilot, collect many independent states, define task-balanced splits and
+normalization, train multiple seeds, and report per-task and macro-averaged planning
+metrics with confidence intervals.
+
+## Frozen 100-state pilot gate
+
+Apply this gate independently to each added task before collecting 2,000 states. These
+criteria are frozen before the pilot results are inspected:
+
+| Check | Required result |
+| --- | --- |
+| Collection size | 100 complete state groups and 500 fragments |
+| Physical and schema checks | 500/500 fragments pass |
+| Sibling identity and action diversity | 100/100 groups pass |
+| Visibility | Primary-object and robot points are present in every fragment |
+| Success policy | At least 90/100 `success` branches complete the environment task |
+| Weak/failure/no-op controls | No more than 5% task-success false positives per branch |
+| Off-target control | No more than 20% task-success false positives |
+| Intended outcomes | At least 475/500 records have `outcome_match = true` |
+| Outcome coverage | Successful, weak, off-target, and no-motion classes are all present |
+| Task progress | Median final task distance is below median initial distance for the success branch |
+
+A task that misses any criterion remains at policy-development scale. Preserve the pilot
+report and revise the policy or outcome classifier before starting its full collection.
+
+Evaluate a completed pilot with:
+
+```bash
+python scripts/evaluate_task_pilot.py \
+  --root artifacts/datasets/<task>_pilot_v1
+```
+
+The command writes `pilot_gate.json` beside the collection manifest and exits non-zero
+when any frozen criterion fails.

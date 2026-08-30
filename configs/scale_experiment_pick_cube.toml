@@ -1,0 +1,35 @@
+[experiment]
+name = "pick_cube_scale_v1"
+dataset_root = "artifacts/datasets/pick_cube_scale_v1"
+data_config = "configs/data_scale_pick_cube.toml"
+output_root = "artifacts/experiments/pick_cube_scale_v1"
+horizons = [1, 2, 4, 8]
+minimum_fragments = 10000
+seed = 3701
+
+[model]
+width = 128
+action_dimensions = 7
+sparse_queries = 64
+dense_queries = 512
+
+[training]
+epochs = 30
+patience = 6
+batch_size = 32
+num_workers = 2
+learning_rate = 0.001
+weight_decay = 0.0001
+gradient_clip_norm = 1.0
+amp = true
+memory_budget_mib = 6144
+minimum_headroom_mib = 1024
+
+[evaluation]
+batch_size = 8
+moving_threshold_m = 0.001
+candidate_branches = 64
+benchmark_repetitions = 30
+action_shuffle_seed = 911
+compute_geometry_metrics = false
+cache_equivalence_tolerance_m = 0.0005

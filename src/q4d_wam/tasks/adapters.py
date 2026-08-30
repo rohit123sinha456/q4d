@@ -305,7 +305,10 @@ class PullCubeAdapter(PushCubeAdapter):
         weak_steps = int(rng.integers(3, max(4, horizon // 2 + 1)))
         off_target_offset = sign * float(rng.uniform(0.18, 0.25))
         failure_offset = float(rng.uniform(-0.04, 0.04))
-        standoff = 0.12
+        # The goal region is 0.20 m behind the initial cube center and has a
+        # 0.10 m radius. A 0.12 m standoff leaves the cube just outside the
+        # success boundary after eight controller steps on the CPU backend.
+        standoff = 0.09
         targets = {
             "success": goal + torch.tensor([standoff, 0.0, 0.0]),
             "perturbed": goal + torch.tensor([standoff, lateral_offset, 0.0]),
@@ -345,24 +348,69 @@ class GraspAndPlaceAdapter(TaskAdapter):
     """Shared preparation and branches for single-object grasp-and-place tasks."""
 
     grasp_clearance_m = 0.10
+    release_at_destination = True
+    destination_clearance_m = 0.10
+    transit_step_adjustment = 0
+    release_step_adjustment = 0
+    hold_settle_steps = 0
+    staging_clearance_m: float | None = None
+    staged_closed_steps = 0
+    staged_open_steps = 0
+    staged_gripper_command = 1.0
+
+    def adjust_destination(
+        self, obj: Tensor, destination: Tensor, branch: str
+    ) -> Tensor:
+        """Adjust an object-center destination for task-specific release dynamics."""
+
+        return destination
+
+    def adjust_staging_destination(self, obj: Tensor, destination: Tensor) -> Tensor:
+        """Adjust the common pre-branch staging point without biasing placement."""
+
+        return destination
 
     def prepare(self, env: Any, max_steps: int) -> tuple[Any, int]:
         obj = self.primary_object_position(env)
         above = obj + torch.tensor([0.0, 0.0, self.grasp_clearance_m])
-        first_budget = max(1, max_steps // 2)
+        first_budget = max(1, max_steps // (4 if self.staging_clearance_m else 2))
         observation, first_steps = move_tcp_to(
             env, above, first_budget, gripper=1.0
         )
         grasp = obj + torch.tensor([0.0, 0.0, 0.01])
-        second_budget = max(1, max_steps - first_steps - 2)
+        if self.staging_clearance_m is None:
+            second_budget = max(1, max_steps - first_steps - 2)
+        else:
+            second_budget = max(1, max_steps // 4)
         observation, second_steps = move_tcp_to(
             env, grasp, second_budget, gripper=1.0
         )
-        close_steps = max(1, max_steps - first_steps - second_steps)
+        if self.staging_clearance_m is None:
+            close_steps = max(1, max_steps - first_steps - second_steps)
+        else:
+            close_steps = max(1, max_steps // 8)
         for _ in range(close_steps):
             action = make_delta_pose_action(env, grasp, gripper=-1.0)
             observation, _, _, _, _ = env.step(action)
-        return observation, first_steps + second_steps + close_steps
+        used_steps = first_steps + second_steps + close_steps
+        if self.staging_clearance_m is None:
+            return observation, used_steps
+
+        obj = self.primary_object_position(env)
+        tcp = env.unwrapped.agent.tcp.pose.p[0].detach().cpu().float().clone()
+        destination = self.adjust_staging_destination(obj, self.goal_world_m(env))
+        staging_target = destination + (tcp - obj) + torch.tensor(
+            [0.0, 0.0, self.staging_clearance_m]
+        )
+        staging_budget = max(1, max_steps - used_steps)
+        observation, staging_steps = move_tcp_to(
+            env, staging_target, staging_budget, gripper=-1.0
+        )
+        settle_steps = max(0, staging_budget - staging_steps)
+        for _ in range(settle_steps):
+            action = make_delta_pose_action(env, staging_target, gripper=-1.0)
+            observation, _, _, _, _ = env.step(action)
+        return observation, used_steps + staging_steps + settle_steps
 
     def make_branch_plan(
         self,
@@ -376,18 +424,20 @@ class GraspAndPlaceAdapter(TaskAdapter):
         self.validate_branch(branch)
         obj = self.primary_object_position(env)
         goal = self.goal_world_m(env)
+        tcp = env.unwrapped.agent.tcp.pose.p[0].detach().cpu().float().clone()
+        tcp_from_object = tcp - obj
         rng = np.random.default_rng(seed + 20_000)
         sign = -1.0 if state_index % 2 else 1.0
         small_lateral = sign * float(rng.uniform(0.03, 0.06))
         large_lateral = sign * float(rng.uniform(0.12, 0.18))
         weak_scale = float(rng.uniform(0.35, 0.55))
-        lift = obj + torch.tensor([0.0, 0.0, 0.10])
+        lift = obj + tcp_from_object + torch.tensor([0.0, 0.0, 0.10])
         perturbed_goal = goal + torch.tensor([0.0, small_lateral, 0.0])
         off_target_goal = goal + torch.tensor([0.0, large_lateral, 0.02])
         failure_goal = obj + torch.tensor([-0.12, large_lateral, 0.02])
 
-        lift_steps = max(1, horizon // 3)
-        release_steps = max(1, horizon // 4)
+        transit_steps = max(1, horizon // 2 + self.transit_step_adjustment)
+        release_steps = max(1, horizon // 4 + self.release_step_adjustment)
         waypoints: list[Tensor | None] = []
         grippers: list[float] = []
         scales: list[float] = []
@@ -401,7 +451,7 @@ class GraspAndPlaceAdapter(TaskAdapter):
                 gripper = 1.0
                 scale = 1.0
             elif branch == "weak":
-                target = lift if time_index < lift_steps else None
+                target = lift if time_index < max(1, horizon // 3) else None
                 gripper = -1.0
                 scale = weak_scale if target is not None else 1.0
             else:
@@ -410,15 +460,38 @@ class GraspAndPlaceAdapter(TaskAdapter):
                     "perturbed": perturbed_goal,
                     "off_target": off_target_goal,
                 }[branch]
-                if time_index < lift_steps:
-                    target = lift
+                destination = self.adjust_destination(obj, destination, branch)
+                placement_target = destination + tcp_from_object
+                if self.staging_clearance_m is not None:
+                    closed_steps = min(self.staged_closed_steps, horizon)
+                    open_end = min(
+                        closed_steps + self.staged_open_steps,
+                        horizon,
+                    )
+                    if time_index < closed_steps:
+                        target = placement_target
+                        gripper = -1.0
+                    elif time_index < open_end:
+                        target = placement_target
+                        gripper = self.staged_gripper_command
+                    else:
+                        target = None
+                        gripper = self.staged_gripper_command
+                elif not self.release_at_destination:
+                    target = (
+                        None
+                        if time_index >= horizon - self.hold_settle_steps
+                        else placement_target
+                    )
                     gripper = -1.0
-                elif time_index >= horizon - release_steps:
-                    target = destination + torch.tensor([0.0, 0.0, 0.08])
-                    gripper = 1.0
                 else:
-                    target = destination
-                    gripper = -1.0
+                    if time_index < transit_steps:
+                        target = placement_target + torch.tensor(
+                            [0.0, 0.0, self.destination_clearance_m]
+                        )
+                    else:
+                        target = placement_target
+                    gripper = 1.0 if time_index >= horizon - release_steps else -1.0
                 scale = 1.0
             waypoints.append(target)
             grippers.append(gripper)
@@ -433,11 +506,14 @@ class GraspAndPlaceAdapter(TaskAdapter):
                 if branch == "perturbed"
                 else 0.0,
                 "weak_action_scale": weak_scale if branch == "weak" else 1.0,
-                "weak_active_steps": lift_steps if branch == "weak" else 0,
+                "weak_active_steps": max(1, horizon // 3)
+                if branch == "weak"
+                else 0,
                 "off_target_lateral_offset_m": large_lateral
                 if branch == "off_target"
                 else 0.0,
                 "preparation_grasped": self.is_grasped(env),
+                "preparation_staged": self.staging_clearance_m is not None,
             },
         )
 
@@ -449,6 +525,10 @@ class GraspAndPlaceAdapter(TaskAdapter):
 class PickCubeAdapter(GraspAndPlaceAdapter):
     env_id = "PickCube-v1"
     name = "pick_cube"
+    # PickCube succeeds while the cube remains grasped; it additionally requires
+    # the arm to settle. Holding the goal is therefore preferable to releasing.
+    release_at_destination = False
+    hold_settle_steps = 1
 
     def semantic_entities(self, env: Any) -> tuple[SemanticEntity, ...]:
         unwrapped = env.unwrapped
@@ -467,6 +547,10 @@ class PickCubeAdapter(GraspAndPlaceAdapter):
 class PlaceSphereAdapter(GraspAndPlaceAdapter):
     env_id = "PlaceSphere-v1"
     name = "place_sphere"
+    staging_clearance_m = 0.06
+    staged_closed_steps = 3
+    staged_open_steps = 2
+    staged_gripper_command = 0.75
 
     def semantic_entities(self, env: Any) -> tuple[SemanticEntity, ...]:
         unwrapped = env.unwrapped
@@ -488,6 +572,22 @@ class PlaceSphereAdapter(GraspAndPlaceAdapter):
 class StackCubeAdapter(GraspAndPlaceAdapter):
     env_id = "StackCube-v1"
     name = "stack_cube"
+    staging_clearance_m = 0.06
+    staged_closed_steps = 2
+    staged_open_steps = 2
+    staged_gripper_command = 0.75
+
+    def adjust_staging_destination(self, obj: Tensor, destination: Tensor) -> Tensor:
+        approach_xy = destination[:2] - obj[:2]
+        norm = torch.linalg.vector_norm(approach_xy)
+        if norm <= 1e-6:
+            return destination
+        adjusted = destination.clone()
+        # Stage slightly short to avoid striking cube B during transport. The
+        # branch policy then places at the exact center instead of compounding
+        # this offset from an almost-zero approach direction.
+        adjusted[:2] -= 0.02 * approach_xy / norm
+        return adjusted
 
     def semantic_entities(self, env: Any) -> tuple[SemanticEntity, ...]:
         unwrapped = env.unwrapped

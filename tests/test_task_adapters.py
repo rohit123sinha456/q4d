@@ -6,7 +6,7 @@ import torch
 
 from q4d_wam.labels import CATEGORY_GOAL, CATEGORY_OBJECT
 from q4d_wam.tasks import get_task_adapter, supported_task_ids
-from q4d_wam.tasks.adapters import PushCubeAdapter
+from q4d_wam.tasks.adapters import PushCubeAdapter, StackCubeAdapter
 
 
 class _Actor:
@@ -121,3 +121,31 @@ def test_every_adapter_uses_same_model_facing_branch_contract() -> None:
             "failure",
             "no_op",
         )
+
+
+def test_stackcube_stages_short_but_places_at_exact_destination() -> None:
+    cube_a = _Actor("cubeA", [0.0, 0.0, 0.02], 20)
+    cube_b = _Actor("cubeB", [0.1, 0.0, 0.02], 21)
+    tcp = SimpleNamespace(pose=SimpleNamespace(p=torch.tensor([[0.0, 0.0, 0.03]])))
+    env = SimpleNamespace(
+        unwrapped=SimpleNamespace(
+            cubeA=cube_a,
+            cubeB=cube_b,
+            cube_half_size=torch.tensor([0.02, 0.02, 0.02]),
+            agent=SimpleNamespace(tcp=tcp, is_grasping=lambda _: False),
+        ),
+        action_space=SimpleNamespace(shape=(7,)),
+    )
+    adapter = StackCubeAdapter()
+    goal = adapter.goal_world_m(env)
+    staging = adapter.adjust_staging_destination(
+        adapter.primary_object_position(env), goal
+    )
+    torch.testing.assert_close(staging, torch.tensor([0.08, 0.0, 0.06]))
+
+    plan = adapter.make_branch_plan(env, "success", 8, seed=5701, state_index=0)
+    exact_tcp_destination = torch.tensor([0.1, 0.0, 0.07])
+    for target in plan.targets_world_m[:4]:
+        torch.testing.assert_close(target, exact_tcp_destination)
+    assert plan.targets_world_m[4:] == (None, None, None, None)
+    assert plan.gripper_commands == (-1.0, -1.0, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75)

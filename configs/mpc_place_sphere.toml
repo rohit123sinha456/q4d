@@ -1,0 +1,37 @@
+[paths]
+normalization = "artifacts/datasets/place_sphere_scale_v1/normalization.json"
+micro_q4d_checkpoint = "artifacts/experiments/place_sphere_scale_v1/h8/micro_q4d/best.pt"
+dense_checkpoint = "artifacts/experiments/place_sphere_scale_v1/h8/dense/best.pt"
+no_action_checkpoint = "artifacts/experiments/place_sphere_scale_v1/h8/no_action/best.pt"
+output = "artifacts/planning/place_sphere_mpc_v1/report.json"
+
+[model]
+width = 128
+horizon = 8
+action_dimensions = 7
+scene_points = 512
+object_query_limit = 48
+
+[simulation]
+env_id = "PlaceSphere-v1"
+control_mode = "pd_ee_delta_pose"
+approach_max_steps = 24
+control_cycles = 12
+max_depth_m = 1.5
+object_quota = 48
+robot_quota = 128
+goal_quota = 32
+
+[planning]
+seed = 5601
+episodes = 10
+models = ["q4d", "dense"]
+methods = ["random_shooting", "cem"]
+budgets_ms = [50.0, 100.0, 200.0]
+candidates_per_batch = 64
+elite_fraction = 0.1
+initial_std_xy = 0.8
+initial_std_z = 0.2
+minimum_std = 0.05
+action_penalty = 0.0001
+amp = true

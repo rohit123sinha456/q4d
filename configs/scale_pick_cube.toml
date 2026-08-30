@@ -1,0 +1,28 @@
+[project]
+seed = 3701
+output_dir = "artifacts/datasets/pick_cube_scale_v1"
+
+[model]
+n_scene_points = 512
+n_query_points = 64
+horizon = 8
+width = 128
+
+[simulation]
+env_id = "PickCube-v1"
+num_envs = 1
+obs_mode = "rgb+depth+segmentation"
+control_mode = "pd_ee_delta_pose"
+steps = 8
+sim_backend = "physx_cpu"
+render_backend = "sapien_cpu"
+
+[labels]
+num_points = 512
+horizon = 8
+max_depth_m = 1.5
+object_quota = 48
+robot_quota = 128
+goal_quota = 32
+approach_max_steps = 24
+contact_distance_m = 0.03

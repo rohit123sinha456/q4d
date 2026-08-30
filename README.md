@@ -414,8 +414,8 @@ tasks, verification command, and exact scope of the real-simulator audit.
 Do not combine the five pilot datasets and treat that as a multi-task result. The
 remaining research work is to:
 
-1. Replace the four added tasks' smoke-test motions with reliable task-solving policies
-   and validate them across varied initial states.
+1. Validate the four added tasks' one-state-success policies across varied initial
+   states and improve any task whose pilot success rate is inadequate.
 2. Store explicit task/control/action metadata in a combined dataset manifest and add
    masks or separate heads before mixing incompatible action spaces.
 3. Define task-balanced training-only normalization and grouped train/validation/test

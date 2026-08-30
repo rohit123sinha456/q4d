@@ -362,6 +362,7 @@ def _generate_episode(
         seed=seed,
         state_index=state_index,
     )
+    initial_task_distance_m = adapter.task_distance_m(env)
     final_info: dict[str, Any] = {}
     success_reached = False
     for time_index in range(label_config.horizon):
@@ -394,6 +395,7 @@ def _generate_episode(
     primary_object_centers_tensor = torch.stack(primary_object_centers)
     tracked_entity_centers_tensor = torch.stack(tracked_entity_centers, dim=1)
     task_success_final = bool(torch.as_tensor(final_info.get("success", False)).any())
+    final_task_distance_m = adapter.task_distance_m(env)
 
     static_mask = point_categories == CATEGORY_STATIC
     object_mask = point_categories == CATEGORY_OBJECT
@@ -462,6 +464,8 @@ def _generate_episode(
         "primary_object_displacement_m": float(primary_object_displacement),
         "task_success": task_success_final,
         "task_success_ever": success_reached,
+        "initial_task_distance_m": initial_task_distance_m,
+        "final_task_distance_m": final_task_distance_m,
         **branch_plan.metadata,
         "object_point_final_displacement_mean_m": float(
             torch.linalg.vector_norm(

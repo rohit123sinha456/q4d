@@ -112,6 +112,9 @@ def _verify_task(config: Path, output: Path) -> dict[str, Any]:
         "success_branch_moves_object": (
             records_by_branch["success"]["primary_object_displacement_m"] > 0.002
         ),
+        "success_branch_completes_task": bool(
+            records_by_branch["success"]["task_success"]
+        ),
         "grasp_preparation_succeeds": all(
             preparation_grasped.get(branch, False)
             for branch in ("success", "off_target")
@@ -131,6 +134,12 @@ def _verify_task(config: Path, output: Path) -> dict[str, Any]:
         "schema": schemas[0],
         "success_branch": {
             "task_success": records_by_branch["success"]["task_success"],
+            "initial_task_distance_m": records_by_branch["success"][
+                "initial_task_distance_m"
+            ],
+            "final_task_distance_m": records_by_branch["success"][
+                "final_task_distance_m"
+            ],
             "primary_object_displacement_m": records_by_branch["success"][
                 "primary_object_displacement_m"
             ],
