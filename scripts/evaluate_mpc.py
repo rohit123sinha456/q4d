@@ -349,6 +349,14 @@ def _summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             == (model, method, budget)
         ]
         cycles = [cycle for record in selected for cycle in record["cycles"]]
+        planning_ms = [float(cycle["planning_ms"]) for cycle in cycles]
+        budget_overruns_ms = [
+            float(cycle["budget_overrun_ms"]) for cycle in cycles
+        ]
+        candidates = [int(cycle["candidates_evaluated"]) for cycle in cycles]
+        total_planning_seconds = sum(planning_ms) / 1000.0
+        if not cycles or total_planning_seconds <= 0:
+            raise RuntimeError("each MPC condition must contain measured planning cycles")
         summary.append(
             {
                 "model": model,
@@ -360,17 +368,43 @@ def _summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "mean_final_cube_goal_distance_m": float(
                     np.mean([record["final_cube_goal_distance_m"] for record in selected])
                 ),
+                "mean_final_task_distance_m": float(
+                    np.mean([record["final_task_distance_m"] for record in selected])
+                ),
                 "mean_control_cycles": float(
                     np.mean([record["control_cycles"] for record in selected])
                 ),
                 "mean_candidates_per_cycle": float(
-                    np.mean([cycle["candidates_evaluated"] for cycle in cycles])
+                    np.mean(candidates)
                 ),
-                "mean_planning_ms": float(
-                    np.mean([cycle["planning_ms"] for cycle in cycles])
+                "candidate_throughput_per_second": float(
+                    sum(candidates) / total_planning_seconds
+                ),
+                "mean_planning_ms": float(np.mean(planning_ms)),
+                "p50_planning_ms": float(np.quantile(planning_ms, 0.50)),
+                "p95_planning_ms": float(np.quantile(planning_ms, 0.95)),
+                "budget_overrun_cycles": sum(value > 0 for value in budget_overruns_ms),
+                "budget_overrun_rate": float(
+                    np.mean([value > 0 for value in budget_overruns_ms])
+                ),
+                "p50_budget_overrun_ms": float(
+                    np.quantile(budget_overruns_ms, 0.50)
                 ),
                 "p95_budget_overrun_ms": float(
-                    np.quantile([cycle["budget_overrun_ms"] for cycle in cycles], 0.95)
+                    np.quantile(budget_overruns_ms, 0.95)
+                ),
+                "maximum_budget_overrun_ms": max(budget_overruns_ms),
+                "object_visibility_failures": sum(
+                    record["termination_reason"] == "object_not_visible"
+                    for record in selected
+                ),
+                "object_visibility_failure_rate": float(
+                    np.mean(
+                        [
+                            record["termination_reason"] == "object_not_visible"
+                            for record in selected
+                        ]
+                    )
                 ),
             }
         )
@@ -402,8 +436,14 @@ def _matched_comparisons(summary: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     - dense["mean_final_cube_goal_distance_m"]
                 ),
                 "q4d_over_dense_candidate_throughput": (
-                    q4d["mean_candidates_per_cycle"]
-                    / dense["mean_candidates_per_cycle"]
+                    q4d["candidate_throughput_per_second"]
+                    / dense["candidate_throughput_per_second"]
+                ),
+                "q4d_minus_dense_p50_planning_ms": (
+                    q4d["p50_planning_ms"] - dense["p50_planning_ms"]
+                ),
+                "q4d_minus_dense_p95_planning_ms": (
+                    q4d["p95_planning_ms"] - dense["p95_planning_ms"]
                 ),
             }
         )
@@ -500,6 +540,7 @@ def main() -> None:
     summary = _summarize(records)
     matched_comparisons = _matched_comparisons(summary)
     expected = len(models_requested) * len(methods) * len(budgets) * episodes
+    report_seeds = [int(planning["seed"]) + index for index in range(episodes)]
     report = {
         "protocol": {
             "environment": raw["simulation"]["env_id"],
@@ -508,7 +549,7 @@ def main() -> None:
             "methods": methods,
             "budgets_ms": budgets,
             "episodes_per_condition": episodes,
-            "seeds": [int(planning["seed"]) + index for index in range(episodes)],
+            "seeds": report_seeds,
             "cost": (
                 "final visible primary-object centroid distance to task goal plus "
                 "action penalty"
@@ -520,6 +561,11 @@ def main() -> None:
             "privileged_cost_only": (
                 "task-adapter semantics and segmentation select identical primary-object "
                 "points for both models"
+            ),
+            "planning_label": "oracle-object-query planning",
+            "oracle_object_query_disclosure": (
+                "Privileged simulator segmentation selects primary-object query points "
+                "for planning cost evaluation; this is not deployable perception."
             ),
             "receding_horizon": "execute first action, reobserve, and replan",
         },
@@ -537,25 +583,35 @@ def main() -> None:
                 len(record["cycles"]) == record["control_cycles"] for record in records
             ),
             "metrics_are_finite": all(
-                np.isfinite(condition["mean_final_cube_goal_distance_m"])
+                np.isfinite(condition[name])
                 for condition in summary
+                for name in (
+                    "mean_final_task_distance_m",
+                    "p50_planning_ms",
+                    "p95_planning_ms",
+                    "candidate_throughput_per_second",
+                    "p95_budget_overrun_ms",
+                )
             ),
             "matched_episode_seeds": all(
                 {
                     record["seed"]
                     for record in records
-                    if record["model"] == "q4d"
-                    and record["method"] == comparison["method"]
-                    and record["budget_ms"] == comparison["budget_ms"]
+                    if record["model"] == model
+                    and record["method"] == method
+                    and record["budget_ms"] == budget
                 }
-                == {
-                    record["seed"]
-                    for record in records
-                    if record["model"] == "dense"
-                    and record["method"] == comparison["method"]
-                    and record["budget_ms"] == comparison["budget_ms"]
-                }
-                for comparison in matched_comparisons
+                == set(report_seed for report_seed in report_seeds)
+                for model in models_requested
+                for method in methods
+                for budget in budgets
+            ),
+            "object_visibility_failures_accounted": sum(
+                condition["object_visibility_failures"] for condition in summary
+            )
+            == sum(
+                record["termination_reason"] == "object_not_visible"
+                for record in records
             ),
             "checkpoints_exist": all(
                 Path(raw["paths"][name]).exists()
