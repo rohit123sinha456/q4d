@@ -93,3 +93,16 @@ def test_pilot_gate_rejects_success_flag_that_disagrees_with_release_behavior(
     assert not result["tasks"]["place_sphere"]["checks"][
         "success_flags_agree_with_behavior"
     ]
+
+
+def test_settling_speed_applies_only_to_placement_and_stacking(tmp_path: Path) -> None:
+    reports = _reports(tmp_path)
+    for episode in reports["pull_cube"]["episodes"]:
+        episode["final_object_behavior"]["speed_m_per_s"] = 1.0
+    for episode in reports["pick_cube"]["episodes"]:
+        episode["final_object_behavior"]["speed_m_per_s"] = 1.0
+
+    result = evaluate_pilot_gate(_raw(), reports)
+
+    assert result["tasks"]["pull_cube"]["genuine_successes"] == 10
+    assert result["tasks"]["pick_cube"]["genuine_successes"] == 10

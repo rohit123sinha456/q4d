@@ -41,15 +41,17 @@ def _genuine_success(
         return False
     improvement = float(episode["distance_improvement_m"])
     final_behavior = episode["final_object_behavior"]
-    speed = final_behavior.get("speed_m_per_s")
-    if improvement <= 0 or speed is None or float(speed) > settled_speed_max:
+    if improvement <= 0:
         return False
     if task == "pick_cube":
         return final_behavior.get("is_grasped") is True
     if task in {"place_sphere", "stack_cube"}:
+        speed = final_behavior.get("speed_m_per_s")
         return bool(
             episode.get("release_command_executed")
             and final_behavior.get("is_grasped") is False
+            and speed is not None
+            and float(speed) <= settled_speed_max
         )
     return True
 
