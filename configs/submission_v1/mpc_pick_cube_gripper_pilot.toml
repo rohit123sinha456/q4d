@@ -47,6 +47,9 @@ gripper_schedules = [
 minimum_schedule_probability = 0.05
 amp = true
 
+[visualization]
+save_episode_contact_sheets = true
+
 [ablation]
 translation_only_config = "configs/mpc_pick_cube.toml"
 translation_only_results = "artifacts/planning/pick_cube_mpc_v1/report.json"

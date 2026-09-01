@@ -1,7 +1,9 @@
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 
@@ -9,6 +11,7 @@ from evaluate_mpc import (  # noqa: E402
     _matched_comparisons,
     _summarize,
     _valid_executed_actions,
+    _write_contact_sheet,
 )
 
 
@@ -76,3 +79,16 @@ def test_mpc_action_validation_rejects_non_7d_record() -> None:
     record["cycles"][0]["executed_first_action"] = [0.0] * 6
 
     assert not _valid_executed_actions([record])
+
+
+def test_trajectory_contact_sheet_is_written(tmp_path: Path) -> None:
+    frames = [
+        ("initial", np.zeros((8, 10, 3), dtype=np.uint8)),
+        ("cycle 0", np.full((8, 10, 3), 255, dtype=np.uint8)),
+    ]
+    output = tmp_path / "trajectory.png"
+
+    _write_contact_sheet(frames, output, columns=2)
+
+    with Image.open(output) as image:
+        assert image.size == (20, 36)

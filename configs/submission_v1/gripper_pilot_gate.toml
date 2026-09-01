@@ -1,0 +1,27 @@
+[protocol]
+tasks = ["pull_cube", "pick_cube", "place_sphere", "stack_cube"]
+model = "q4d"
+method = "random_shooting"
+budget_ms = 100.0
+episodes_per_task = 10
+required_candidate_schedules = [
+  "hold_closed",
+  "hold_open",
+  "closed_to_open_halfway",
+  "closed_to_open_final_quarter",
+  "open_to_closed_halfway",
+]
+
+[thresholds]
+minimum_genuine_successes_per_task = 1
+minimum_improved_episodes_per_task = 6
+minimum_mean_distance_improvement_m = 0.0
+minimum_median_distance_improvement_m = 0.0
+settled_object_speed_max_m_per_s = 0.05
+
+[paths]
+pull_cube_report = "artifacts/submission_v1/planning/gripper_aware_pilot_v1/pull_cube/report.json"
+pick_cube_report = "artifacts/submission_v1/planning/gripper_aware_pilot_v1/pick_cube/report.json"
+place_sphere_report = "artifacts/submission_v1/planning/gripper_aware_pilot_v1/place_sphere/report.json"
+stack_cube_report = "artifacts/submission_v1/planning/gripper_aware_pilot_v1/stack_cube/report.json"
+output = "artifacts/submission_v1/planning/gripper_aware_pilot_v1/pilot_gate.json"

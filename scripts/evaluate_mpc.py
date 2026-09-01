@@ -19,6 +19,7 @@ from generate_point_tracks import (
     _category_tensor,
     _select_camera_name,
 )
+from PIL import Image, ImageDraw
 from torch import Tensor
 
 from q4d_wam.data import NormalizationStats
@@ -73,6 +74,68 @@ def _cost_kwargs(planning: dict[str, Any]) -> dict[str, float | int | bool]:
         "settling_penalty": float(planning.get("settling_penalty", 0.0)),
         "settling_steps": int(planning.get("settling_steps", 2)),
         "use_amp": bool(planning["amp"]),
+    }
+
+
+def _rgb_frame(observation: dict[str, Any], env: Any, adapter: TaskAdapter) -> np.ndarray:
+    camera_name = _select_camera_name(observation, env, adapter)
+    rgb = torch.as_tensor(observation["sensor_data"][camera_name]["rgb"])
+    while rgb.ndim > 3 and rgb.shape[0] == 1:
+        rgb = rgb[0]
+    if rgb.ndim != 3 or rgb.shape[-1] != 3:
+        raise ValueError("trajectory RGB frame must have shape [H, W, 3]")
+    rgb = rgb.detach().cpu()
+    if rgb.is_floating_point() and float(rgb.max()) <= 1.0:
+        rgb = rgb * 255.0
+    return rgb.clamp(0, 255).to(torch.uint8).numpy()
+
+
+def _write_contact_sheet(
+    frames: list[tuple[str, np.ndarray]], path: Path, *, columns: int = 4
+) -> None:
+    if not frames:
+        raise ValueError("contact sheet needs at least one trajectory frame")
+    frame_height, frame_width = frames[0][1].shape[:2]
+    label_height = 28
+    rows = (len(frames) + columns - 1) // columns
+    sheet = Image.new(
+        "RGB",
+        (columns * frame_width, rows * (frame_height + label_height)),
+        color=(20, 20, 20),
+    )
+    draw = ImageDraw.Draw(sheet)
+    for index, (label, frame) in enumerate(frames):
+        if frame.shape != (frame_height, frame_width, 3):
+            raise ValueError("all trajectory frames must share one RGB shape")
+        column = index % columns
+        row = index // columns
+        x = column * frame_width
+        y = row * (frame_height + label_height)
+        sheet.paste(Image.fromarray(frame), (x, y + label_height))
+        draw.text((x + 3, y + 4), label[:32], fill=(255, 255, 255))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(path)
+
+
+def _primary_object_behavior(env: Any, adapter: TaskAdapter) -> dict[str, Any]:
+    obj = adapter.primary_object(env)
+    position = adapter.primary_object_position(env)
+    velocity = getattr(obj, "linear_velocity", None)
+    speed = None
+    if velocity is not None:
+        velocity_tensor = torch.as_tensor(velocity).detach().cpu().float()
+        while velocity_tensor.ndim > 1 and velocity_tensor.shape[0] == 1:
+            velocity_tensor = velocity_tensor[0]
+        if velocity_tensor.shape == (3,):
+            speed = float(torch.linalg.vector_norm(velocity_tensor))
+    grasped = None
+    is_grasped = getattr(adapter, "is_grasped", None)
+    if callable(is_grasped):
+        grasped = bool(is_grasped(env))
+    return {
+        "position_world_m": position.tolist(),
+        "speed_m_per_s": speed,
+        "is_grasped": grasped,
     }
 
 
@@ -262,6 +325,7 @@ def _episode(
     episode_seed: int,
     device: torch.device,
     adapter: TaskAdapter,
+    visualization_path: Path | None = None,
 ) -> dict[str, Any]:
     model_config = raw["model"]
     simulation = raw["simulation"]
@@ -281,9 +345,14 @@ def _episode(
     )
     planner = random_shooting if method == "random_shooting" else cem
     cycles = []
+    trajectory_frames: list[tuple[str, np.ndarray]] = []
+    if visualization_path is not None:
+        trajectory_frames.append(("initial", _rgb_frame(observation, env, adapter)))
     success = False
     termination_reason = "control_cycle_limit"
     initial_distance = adapter.task_distance_m(env)
+    initial_behavior = _primary_object_behavior(env, adapter)
+    initial_position = torch.tensor(initial_behavior["position_world_m"])
     for cycle in range(int(simulation["control_cycles"])):
         try:
             scene_world, scene_rgb, object_indices, goal_world = (
@@ -325,6 +394,12 @@ def _episode(
         observation, _, _, _, info = env.step(action)
         success = bool(torch.as_tensor(info.get("success", False)).any())
         task_distance = adapter.task_distance_m(env)
+        behavior = _primary_object_behavior(env, adapter)
+        object_displacement = float(
+            torch.linalg.vector_norm(
+                torch.tensor(behavior["position_world_m"]) - initial_position
+            )
+        )
         cycles.append(
             {
                 "cycle": cycle,
@@ -336,6 +411,10 @@ def _episode(
                 "selected_gripper_schedule": result.gripper_schedule,
                 "executed_gripper_command": float(action[-1]),
                 "executed_first_action": action.tolist(),
+                "primary_object_position_world_m": behavior["position_world_m"],
+                "primary_object_speed_m_per_s": behavior["speed_m_per_s"],
+                "primary_object_is_grasped": behavior["is_grasped"],
+                "primary_object_displacement_m": object_displacement,
                 "cube_goal_distance_m": task_distance,
                 "task_distance_m": task_distance,
                 "object_query_points": len(object_indices),
@@ -343,10 +422,19 @@ def _episode(
                 "success": success,
             }
         )
+        if visualization_path is not None:
+            label = (
+                f"c{cycle} {result.gripper_schedule[:14]} "
+                f"g={float(action[-1]):+.0f} d={task_distance:.3f}"
+            )
+            trajectory_frames.append((label, _rgb_frame(observation, env, adapter)))
         if success:
             termination_reason = "success"
             break
     final_distance = adapter.task_distance_m(env)
+    final_behavior = _primary_object_behavior(env, adapter)
+    if visualization_path is not None:
+        _write_contact_sheet(trajectory_frames, visualization_path)
     return {
         "task_adapter": adapter.name,
         "model": model_name,
@@ -361,6 +449,18 @@ def _episode(
         "final_cube_goal_distance_m": final_distance,
         "initial_task_distance_m": initial_distance,
         "final_task_distance_m": final_distance,
+        "distance_improvement_m": initial_distance - final_distance,
+        "initial_object_behavior": initial_behavior,
+        "final_object_behavior": final_behavior,
+        "closed_command_executed": any(
+            cycle["executed_gripper_command"] < 0 for cycle in cycles
+        ),
+        "release_command_executed": any(
+            cycle["executed_gripper_command"] > 0 for cycle in cycles
+        ),
+        "trajectory_visualization": (
+            str(visualization_path) if visualization_path is not None else None
+        ),
         "cycles": cycles,
     }
 
@@ -538,6 +638,9 @@ def main() -> None:
         raise RuntimeError("MPC evaluation requires CUDA")
     device = torch.device("cuda:0")
     output = args.output or Path(raw["paths"]["output"])
+    save_visualizations = bool(
+        raw.get("visualization", {}).get("save_episode_contact_sheets", False)
+    )
     progress_path = output.with_name("episodes.json")
     progress = (
         json.loads(progress_path.read_text(encoding="utf-8"))
@@ -588,6 +691,16 @@ def main() -> None:
                             episode_seed=episode_seed,
                             device=device,
                             adapter=adapter,
+                            visualization_path=(
+                                output.parent
+                                / "visualizations"
+                                / (
+                                    f"{model_name}_{method}_{budget:g}ms_"
+                                    f"seed{episode_seed}.png"
+                                )
+                                if save_visualizations
+                                else None
+                            ),
                         )
                         progress[key] = record
                         _write_json_atomic(progress_path, progress)
@@ -621,6 +734,7 @@ def main() -> None:
             ),
             "settling_penalty": float(planning.get("settling_penalty", 0.0)),
             "settling_steps": int(planning.get("settling_steps", 2)),
+            "episode_contact_sheets": save_visualizations,
             "cost": (
                 "final visible primary-object centroid distance to task goal plus "
                 "late-horizon centroid-motion settling penalty plus action penalty"

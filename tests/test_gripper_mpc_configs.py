@@ -39,6 +39,7 @@ def test_submission_gripper_configs_share_library_and_isolate_outputs() -> None:
         assert tuple(planning["gripper_schedules"]) == DEFAULT_GRIPPER_SCHEDULES
         assert planning["settling_penalty"] == settling_penalty
         assert planning["settling_steps"] == 2
+        assert raw["visualization"]["save_episode_contact_sheets"] is True
         PlannerConfig(
             horizon=model["horizon"],
             action_dimensions=model["action_dimensions"],
@@ -56,3 +57,23 @@ def test_submission_gripper_configs_share_library_and_isolate_outputs() -> None:
             "translation_only_results": f"artifacts/planning/{task}_mpc_v1/report.json",
         }
     assert len(outputs) == len(TASKS)
+
+
+def test_gripper_pilot_gate_is_frozen_before_execution() -> None:
+    raw = _load(ROOT / "configs" / "submission_v1" / "gripper_pilot_gate.toml")
+
+    assert raw["protocol"] == {
+        "tasks": ["pull_cube", "pick_cube", "place_sphere", "stack_cube"],
+        "model": "q4d",
+        "method": "random_shooting",
+        "budget_ms": 100.0,
+        "episodes_per_task": 10,
+        "required_candidate_schedules": list(DEFAULT_GRIPPER_SCHEDULES),
+    }
+    assert raw["thresholds"] == {
+        "minimum_genuine_successes_per_task": 1,
+        "minimum_improved_episodes_per_task": 6,
+        "minimum_mean_distance_improvement_m": 0.0,
+        "minimum_median_distance_improvement_m": 0.0,
+        "settled_object_speed_max_m_per_s": 0.05,
+    }
