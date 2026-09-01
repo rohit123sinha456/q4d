@@ -58,6 +58,11 @@ def _planner_config(raw: dict[str, Any]) -> PlannerConfig:
         initial_std_xy=float(planning["initial_std_xy"]),
         initial_std_z=float(planning["initial_std_z"]),
         minimum_std=float(planning["minimum_std"]),
+        maximum_batches=(
+            int(planning["maximum_batches"])
+            if planning.get("maximum_batches") is not None
+            else None
+        ),
         action_space=str(planning.get("action_space", "translation_only")),
         gripper_schedules=tuple(
             planning.get("gripper_schedules", DEFAULT_GRIPPER_SCHEDULES)
@@ -734,6 +739,12 @@ def main() -> None:
             ),
             "settling_penalty": float(planning.get("settling_penalty", 0.0)),
             "settling_steps": int(planning.get("settling_steps", 2)),
+            "maximum_batches_per_cycle": planner_config.maximum_batches,
+            "fixed_candidates_per_cycle": (
+                planner_config.candidates_per_batch * planner_config.maximum_batches
+                if planner_config.maximum_batches is not None
+                else None
+            ),
             "episode_contact_sheets": save_visualizations,
             "neutralized_constant_action_channels": list(
                 normalization.constant_action_channels

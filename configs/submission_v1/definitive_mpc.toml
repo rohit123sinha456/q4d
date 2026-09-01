@@ -1,0 +1,96 @@
+[experiment]
+id = "submission_v1_definitive_mpc_v1"
+protocol = "configs/submission_protocol_v1.toml"
+pilot_gate = "artifacts/submission_v1/planning/gripper_aware_pilot_v1/pilot_gate.json"
+prediction_status = "artifacts/submission_v1/prediction/multiseed_h8_v1/run_status.json"
+output_root = "artifacts/submission_v1/planning/definitive_mpc_v1"
+tasks = ["pull_cube", "pick_cube", "place_sphere", "stack_cube"]
+models = ["q4d", "dense", "no_action"]
+method = "random_shooting"
+budget_ms = 100.0
+episodes_per_task_model = 30
+planning_label = "oracle-object-query planning"
+checkpoint_policy = "preserved_seed_one_used_by_pilot"
+
+[fixed_count_control]
+enabled = true
+candidates_per_cycle = 64
+maximum_batches = 1
+role = "secondary control separating prediction/decoding throughput from candidate count"
+
+[task.pull_cube]
+env_id = "PullCube-v1"
+seed_start = 13701
+approach_max_steps = 16
+settling_penalty = 0.0
+normalization = "artifacts/datasets/pull_cube_scale_v1/normalization.json"
+micro_q4d_checkpoint = "artifacts/experiments/pull_cube_scale_v1/h8/micro_q4d/best.pt"
+dense_checkpoint = "artifacts/experiments/pull_cube_scale_v1/h8/dense/best.pt"
+no_action_checkpoint = "artifacts/experiments/pull_cube_scale_v1/h8/no_action/best.pt"
+
+[task.pick_cube]
+env_id = "PickCube-v1"
+seed_start = 14701
+approach_max_steps = 24
+settling_penalty = 0.0
+normalization = "artifacts/datasets/pick_cube_scale_v1/normalization.json"
+micro_q4d_checkpoint = "artifacts/experiments/pick_cube_scale_v1/h8/micro_q4d/best.pt"
+dense_checkpoint = "artifacts/experiments/pick_cube_scale_v1/h8/dense/best.pt"
+no_action_checkpoint = "artifacts/experiments/pick_cube_scale_v1/h8/no_action/best.pt"
+
+[task.place_sphere]
+env_id = "PlaceSphere-v1"
+seed_start = 15701
+approach_max_steps = 24
+settling_penalty = 1.0
+normalization = "artifacts/datasets/place_sphere_scale_v1/normalization.json"
+micro_q4d_checkpoint = "artifacts/experiments/place_sphere_scale_v1/h8/micro_q4d/best.pt"
+dense_checkpoint = "artifacts/experiments/place_sphere_scale_v1/h8/dense/best.pt"
+no_action_checkpoint = "artifacts/experiments/place_sphere_scale_v1/h8/no_action/best.pt"
+
+[task.stack_cube]
+env_id = "StackCube-v1"
+seed_start = 16701
+approach_max_steps = 24
+settling_penalty = 1.0
+normalization = "artifacts/datasets/stack_cube_scale_v1/normalization.json"
+micro_q4d_checkpoint = "artifacts/experiments/stack_cube_scale_v1/h8/micro_q4d/best.pt"
+dense_checkpoint = "artifacts/experiments/stack_cube_scale_v1/h8/dense/best.pt"
+no_action_checkpoint = "artifacts/experiments/stack_cube_scale_v1/h8/no_action/best.pt"
+
+[model]
+width = 128
+horizon = 8
+action_dimensions = 7
+scene_points = 512
+object_query_limit = 48
+
+[simulation]
+control_mode = "pd_ee_delta_pose"
+control_cycles = 12
+max_depth_m = 1.5
+object_quota = 48
+robot_quota = 128
+goal_quota = 32
+
+[planning]
+candidates_per_batch = 64
+elite_fraction = 0.1
+initial_std_xy = 0.8
+initial_std_z = 0.2
+minimum_std = 0.05
+action_penalty = 0.0001
+settling_steps = 2
+action_space = "gripper_schedules"
+gripper_schedules = [
+  "hold_closed",
+  "hold_open",
+  "closed_to_open_halfway",
+  "closed_to_open_final_quarter",
+  "open_to_closed_halfway",
+]
+minimum_schedule_probability = 0.05
+amp = true
+
+[visualization]
+save_episode_contact_sheets = false
