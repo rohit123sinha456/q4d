@@ -9,8 +9,8 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 from evaluate_mpc import _planner_config  # noqa: E402
 from run_submission_definitive_mpc import (  # noqa: E402
     build_task_config,
-    prepare_configs,
     preflight,
+    prepare_configs,
     validate_protocol_contract,
 )
 
