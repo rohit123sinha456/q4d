@@ -6,6 +6,7 @@ from q4d_wam.planning import (
     DEFAULT_GRIPPER_SCHEDULES,
     CachedCubeCost,
     build_gripper_schedule_library,
+    normalize_candidate_actions,
     object_goal_and_stability_cost,
     sample_random_action_sequences,
     validate_action_sequences,
@@ -213,6 +214,28 @@ def test_final_state_stability_cost_penalizes_unsettled_placement() -> None:
     torch.testing.assert_close(goal, torch.zeros(2))
     assert stability[0] == 0
     assert stability[1] == torch.tensor(0.1)
+
+
+def test_constant_training_action_channels_are_neutralized_for_candidates() -> None:
+    stats = NormalizationStats(
+        xyz_mean_m=torch.zeros(3),
+        xyz_scale_m=torch.ones(3),
+        action_mean=torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]),
+        action_scale=torch.tensor([1.0, 1.0, 1.0, 1e-6, 1e-6, 1e-6, 1e-6]),
+        displacement_mean_m=torch.zeros(3),
+        displacement_scale_m=torch.ones(3),
+        constant_action_channels=(3, 4, 5, 6),
+        source_files=(),
+        epsilon=1e-6,
+    )
+    actions = torch.zeros(2, 4, 7)
+    actions[0, :, -1] = -1.0
+    actions[1, :, -1] = 1.0
+
+    normalized = normalize_candidate_actions(actions, stats, torch.device("cpu"))
+
+    assert torch.isfinite(normalized).all()
+    assert torch.count_nonzero(normalized[..., 3:]) == 0
 
 
 def test_sparse_and_dense_adapters_share_cube_centroid_cost() -> None:

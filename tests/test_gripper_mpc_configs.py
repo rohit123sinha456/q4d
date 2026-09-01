@@ -57,6 +57,9 @@ def test_submission_gripper_configs_share_library_and_isolate_outputs() -> None:
             "translation_only_results": f"artifacts/planning/{task}_mpc_v1/report.json",
         }
     assert len(outputs) == len(TASKS)
+    assert "pull_cube_retry1" in next(
+        output for output in outputs if "pull_cube" in output
+    )
 
 
 def test_gripper_pilot_gate_is_frozen_before_execution() -> None:

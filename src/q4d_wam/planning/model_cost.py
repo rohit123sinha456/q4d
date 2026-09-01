@@ -24,6 +24,18 @@ class _PreparedCost:
     goal_world_m: Tensor
 
 
+def normalize_candidate_actions(
+    actions: Tensor, normalization: NormalizationStats, device: torch.device
+) -> Tensor:
+    """Normalize actions while neutralizing channels constant in the training corpus."""
+    normalized = (
+        actions - normalization.action_mean.to(device)
+    ) / normalization.action_scale.to(device)
+    if normalization.constant_action_channels:
+        normalized[..., list(normalization.constant_action_channels)] = 0.0
+    return normalized
+
+
 def object_goal_and_stability_cost(
     prediction_world_m: Tensor,
     score_indices: Tensor,
@@ -148,9 +160,7 @@ class CachedTaskCost:
         device = self.device
         actions = candidate_actions.to(device)
         stats = self.normalization
-        normalized_actions = (
-            actions - stats.action_mean.to(device)
-        ) / stats.action_scale.to(device)
+        normalized_actions = normalize_candidate_actions(actions, stats, device)
         with torch.autocast(
             device_type=device.type,
             dtype=torch.float16,

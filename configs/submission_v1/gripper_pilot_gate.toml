@@ -20,7 +20,7 @@ minimum_median_distance_improvement_m = 0.0
 settled_object_speed_max_m_per_s = 0.05
 
 [paths]
-pull_cube_report = "artifacts/submission_v1/planning/gripper_aware_pilot_v1/pull_cube/report.json"
+pull_cube_report = "artifacts/submission_v1/planning/gripper_aware_pilot_v1/pull_cube_retry1/report.json"
 pick_cube_report = "artifacts/submission_v1/planning/gripper_aware_pilot_v1/pick_cube/report.json"
 place_sphere_report = "artifacts/submission_v1/planning/gripper_aware_pilot_v1/place_sphere/report.json"
 stack_cube_report = "artifacts/submission_v1/planning/gripper_aware_pilot_v1/stack_cube/report.json"

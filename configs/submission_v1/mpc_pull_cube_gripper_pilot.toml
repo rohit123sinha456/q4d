@@ -3,7 +3,7 @@ normalization = "artifacts/datasets/pull_cube_scale_v1/normalization.json"
 micro_q4d_checkpoint = "artifacts/experiments/pull_cube_scale_v1/h8/micro_q4d/best.pt"
 dense_checkpoint = "artifacts/experiments/pull_cube_scale_v1/h8/dense/best.pt"
 no_action_checkpoint = "artifacts/experiments/pull_cube_scale_v1/h8/no_action/best.pt"
-output = "artifacts/submission_v1/planning/gripper_aware_pilot_v1/pull_cube/report.json"
+output = "artifacts/submission_v1/planning/gripper_aware_pilot_v1/pull_cube_retry1/report.json"
 
 [model]
 width = 128

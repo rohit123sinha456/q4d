@@ -735,6 +735,9 @@ def main() -> None:
             "settling_penalty": float(planning.get("settling_penalty", 0.0)),
             "settling_steps": int(planning.get("settling_steps", 2)),
             "episode_contact_sheets": save_visualizations,
+            "neutralized_constant_action_channels": list(
+                normalization.constant_action_channels
+            ),
             "cost": (
                 "final visible primary-object centroid distance to task goal plus "
                 "late-horizon centroid-motion settling penalty plus action penalty"

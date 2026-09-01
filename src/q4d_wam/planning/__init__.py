@@ -3,6 +3,7 @@
 from q4d_wam.planning.model_cost import (
     CachedCubeCost,
     CachedTaskCost,
+    normalize_candidate_actions,
     object_goal_and_stability_cost,
 )
 from q4d_wam.planning.mpc import (
@@ -26,6 +27,7 @@ __all__ = [
     "build_gripper_schedule_library",
     "cem",
     "identify_gripper_schedule",
+    "normalize_candidate_actions",
     "object_goal_and_stability_cost",
     "random_shooting",
     "sample_random_action_sequences",

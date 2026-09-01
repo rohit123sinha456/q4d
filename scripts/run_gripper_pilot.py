@@ -7,6 +7,7 @@ import argparse
 import json
 import subprocess
 import sys
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -38,15 +39,10 @@ def _write_status(path: Path, value: dict[str, Any]) -> None:
 
 
 def _report_path(task: str) -> Path:
-    return (
-        ROOT
-        / "artifacts"
-        / "submission_v1"
-        / "planning"
-        / "gripper_aware_pilot_v1"
-        / task
-        / "report.json"
-    )
+    with (ROOT / CONFIGS[task]).open("rb") as stream:
+        raw = tomllib.load(stream)
+    path = Path(raw["paths"]["output"])
+    return path if path.is_absolute() else ROOT / path
 
 
 def _complete(report: dict[str, Any]) -> bool:
