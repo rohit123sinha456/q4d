@@ -443,6 +443,11 @@ geometry and label audits.
 
 ## 6. Publication-grade experiment protocol
 
+The additional pre-submission experiments are frozen in
+[`docs/submission_protocol_v1.md`](docs/submission_protocol_v1.md), with the
+machine-readable contract in `configs/submission_protocol_v1.toml`. New results use the
+versioned `artifacts/submission_v1/` namespace; the initial study remains unchanged.
+
 Freeze the protocol before launching the expensive run. At minimum, define:
 
 - tasks, robots, control modes, object/layout distributions, and train/test boundaries;
