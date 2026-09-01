@@ -1,0 +1,78 @@
+[experiment]
+id = "submission_v1_multiseed_h8_v1"
+protocol = "configs/submission_protocol_v1.toml"
+output_root = "artifacts/submission_v1/prediction/multiseed_h8_v1"
+horizon = 8
+tasks = ["pull_cube", "pick_cube", "place_sphere", "stack_cube"]
+models = ["micro_q4d", "no_action", "dense"]
+
+[seeds]
+pull_cube = [2701, 2702, 2703]
+pick_cube = [3701, 3702, 3703]
+place_sphere = [4701, 4702, 4703]
+stack_cube = [5701, 5702, 5703]
+
+[existing_seed_one]
+pull_cube = "artifacts/experiments/pull_cube_scale_v1/h8"
+pick_cube = "artifacts/experiments/pick_cube_scale_v1/h8"
+place_sphere = "artifacts/experiments/place_sphere_scale_v1/h8"
+stack_cube = "artifacts/experiments/stack_cube_scale_v1/h8"
+
+[task_inputs.pull_cube]
+data_config = "configs/data_scale_pull_cube.toml"
+split_manifest = "artifacts/datasets/pull_cube_scale_v1/splits.json"
+normalization = "artifacts/datasets/pull_cube_scale_v1/normalization.json"
+reference_baselines = "artifacts/experiments/pull_cube_scale_v1/h8/non_neural.json"
+seed_one_configs = "artifacts/experiments/pull_cube_scale_v1/generated_configs"
+
+[task_inputs.pick_cube]
+data_config = "configs/data_scale_pick_cube.toml"
+split_manifest = "artifacts/datasets/pick_cube_scale_v1/splits.json"
+normalization = "artifacts/datasets/pick_cube_scale_v1/normalization.json"
+reference_baselines = "artifacts/experiments/pick_cube_scale_v1/h8/non_neural.json"
+seed_one_configs = "artifacts/experiments/pick_cube_scale_v1/generated_configs"
+
+[task_inputs.place_sphere]
+data_config = "configs/data_scale_place_sphere.toml"
+split_manifest = "artifacts/datasets/place_sphere_scale_v1/splits.json"
+normalization = "artifacts/datasets/place_sphere_scale_v1/normalization.json"
+reference_baselines = "artifacts/experiments/place_sphere_scale_v1/h8/non_neural.json"
+seed_one_configs = "artifacts/experiments/place_sphere_scale_v1/generated_configs"
+
+[task_inputs.stack_cube]
+data_config = "configs/data_scale_stack_cube.toml"
+split_manifest = "artifacts/datasets/stack_cube_scale_v1/splits.json"
+normalization = "artifacts/datasets/stack_cube_scale_v1/normalization.json"
+reference_baselines = "artifacts/experiments/stack_cube_scale_v1/h8/non_neural.json"
+seed_one_configs = "artifacts/experiments/stack_cube_scale_v1/generated_configs"
+
+[model]
+width = 128
+action_dimensions = 7
+sparse_queries = 64
+dense_queries = 512
+
+[training]
+epochs = 30
+patience = 6
+batch_size = 32
+num_workers = 2
+learning_rate = 0.001
+weight_decay = 0.0001
+gradient_clip_norm = 1.0
+amp = true
+memory_budget_mib = 6144
+minimum_headroom_mib = 1024
+
+[evaluation]
+batch_size = 8
+moving_threshold_m = 0.001
+candidate_branches = 64
+benchmark_repetitions = 30
+action_shuffle_seed = 911
+compute_geometry_metrics = false
+
+[statistics]
+confidence_level = 0.95
+bootstrap_repetitions = 10000
+bootstrap_seed = 240901
