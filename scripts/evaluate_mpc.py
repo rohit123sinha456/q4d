@@ -30,13 +30,50 @@ from q4d_wam.labels import (
     stratified_point_indices,
 )
 from q4d_wam.models import DensePointFutureModel, MicroQ4D, NoActionTrajectoryModel
-from q4d_wam.planning import CachedCubeCost, PlannerConfig, cem, random_shooting
+from q4d_wam.planning import (
+    DEFAULT_GRIPPER_SCHEDULES,
+    CachedCubeCost,
+    PlannerConfig,
+    cem,
+    random_shooting,
+    sample_random_action_sequences,
+)
 from q4d_wam.tasks import TaskAdapter, get_task_adapter
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
     with path.open("rb") as stream:
         return tomllib.load(stream)
+
+
+def _planner_config(raw: dict[str, Any]) -> PlannerConfig:
+    model = raw["model"]
+    planning = raw["planning"]
+    return PlannerConfig(
+        horizon=int(model["horizon"]),
+        action_dimensions=int(model["action_dimensions"]),
+        candidates_per_batch=int(planning["candidates_per_batch"]),
+        elite_fraction=float(planning["elite_fraction"]),
+        initial_std_xy=float(planning["initial_std_xy"]),
+        initial_std_z=float(planning["initial_std_z"]),
+        minimum_std=float(planning["minimum_std"]),
+        action_space=str(planning.get("action_space", "translation_only")),
+        gripper_schedules=tuple(
+            planning.get("gripper_schedules", DEFAULT_GRIPPER_SCHEDULES)
+        ),
+        minimum_schedule_probability=float(
+            planning.get("minimum_schedule_probability", 0.05)
+        ),
+    )
+
+
+def _cost_kwargs(planning: dict[str, Any]) -> dict[str, float | int | bool]:
+    return {
+        "action_penalty": float(planning["action_penalty"]),
+        "settling_penalty": float(planning.get("settling_penalty", 0.0)),
+        "settling_steps": int(planning.get("settling_steps", 2)),
+        "use_amp": bool(planning["amp"]),
+    }
 
 
 def _scene_from_observation(
@@ -119,14 +156,16 @@ def _warmup_models(
     """Initialize the complete CPU-observation-to-cost CUDA path before timing."""
     model_config = raw["model"]
     scene_points = int(model_config["scene_points"])
-    horizon = int(model_config["horizon"])
-    action_dimensions = int(model_config["action_dimensions"])
     scene = torch.zeros(scene_points, 3)
     rgb = torch.zeros_like(scene)
     goal = torch.zeros(3)
-    actions = torch.zeros(64, horizon, action_dimensions, device=device)
-    actions[..., -1] = -1.0
     planning = raw["planning"]
+    planner_config = _planner_config(raw)
+    actions = sample_random_action_sequences(
+        planner_config,
+        device=device,
+        generator=torch.Generator(device=device).manual_seed(0),
+    )
     for name, model in models.items():
         if name == "dense":
             query_counts = [scene_points]
@@ -145,8 +184,7 @@ def _warmup_models(
                 model,
                 normalization,
                 dense_output=name == "dense",
-                action_penalty=float(planning["action_penalty"]),
-                use_amp=bool(planning["amp"]),
+                **_cost_kwargs(planning),
             )
             cost.prepare(scene, rgb, query_indices, goal)
             cost(actions)
@@ -187,20 +225,18 @@ def _warmup_observed_scene(
         },
         object_query_limit=int(model_config["object_query_limit"]),
     )
-    actions = torch.zeros(
-        int(planning["candidates_per_batch"]),
-        int(model_config["horizon"]),
-        int(model_config["action_dimensions"]),
+    planner_config = _planner_config(raw)
+    actions = sample_random_action_sequences(
+        planner_config,
         device=device,
+        generator=torch.Generator(device=device).manual_seed(1),
     )
-    actions[..., -1] = -1.0
     for name, model in models.items():
         cost = CachedCubeCost(
             model,
             normalization,
             dense_output=name == "dense",
-            action_penalty=float(planning["action_penalty"]),
-            use_amp=bool(planning["amp"]),
+            **_cost_kwargs(planning),
         )
         cost.prepare(scene_world, scene_rgb, object_indices, goal_world)
         cost(actions)
@@ -236,21 +272,12 @@ def _episode(
     )
     if observation is None:
         raise RuntimeError("approach controller did not return an observation")
-    planner_config = PlannerConfig(
-        horizon=int(model_config["horizon"]),
-        action_dimensions=int(model_config["action_dimensions"]),
-        candidates_per_batch=int(planning["candidates_per_batch"]),
-        elite_fraction=float(planning["elite_fraction"]),
-        initial_std_xy=float(planning["initial_std_xy"]),
-        initial_std_z=float(planning["initial_std_z"]),
-        minimum_std=float(planning["minimum_std"]),
-    )
+    planner_config = _planner_config(raw)
     cost = CachedCubeCost(
         model,
         normalization,
         dense_output=model_name == "dense",
-        action_penalty=float(planning["action_penalty"]),
-        use_amp=bool(planning["amp"]),
+        **_cost_kwargs(planning),
     )
     planner = random_shooting if method == "random_shooting" else cem
     cycles = []
@@ -306,6 +333,8 @@ def _episode(
                 "candidates_evaluated": result.candidates_evaluated,
                 "batches_evaluated": result.batches_evaluated,
                 "predicted_cost": result.predicted_cost,
+                "selected_gripper_schedule": result.gripper_schedule,
+                "executed_gripper_command": float(action[-1]),
                 "executed_first_action": action.tolist(),
                 "cube_goal_distance_m": task_distance,
                 "task_distance_m": task_distance,
@@ -406,6 +435,25 @@ def _summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         ]
                     )
                 ),
+                "selected_gripper_schedule_counts": {
+                    name: sum(
+                        cycle.get(
+                            "selected_gripper_schedule",
+                            "unrecorded_legacy_schedule",
+                        )
+                        == name
+                        for cycle in cycles
+                    )
+                    for name in sorted(
+                        {
+                            cycle.get(
+                                "selected_gripper_schedule",
+                                "unrecorded_legacy_schedule",
+                            )
+                            for cycle in cycles
+                        }
+                    )
+                },
             }
         )
     return summary
@@ -450,6 +498,20 @@ def _matched_comparisons(summary: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return comparisons
 
 
+def _valid_executed_actions(records: list[dict[str, Any]]) -> bool:
+    for record in records:
+        for cycle in record["cycles"]:
+            action = np.asarray(cycle["executed_first_action"], dtype=np.float64)
+            if (
+                action.shape != (7,)
+                or not np.isfinite(action).all()
+                or np.any(action < -1.0)
+                or np.any(action > 1.0)
+            ):
+                return False
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=Path("configs/mpc.toml"))
@@ -461,6 +523,7 @@ def main() -> None:
     args = parser.parse_args()
     raw = _read_toml(args.config)
     planning = raw["planning"]
+    planner_config = _planner_config(raw)
     models_requested = args.models or list(planning["models"])
     methods = args.methods or list(planning["methods"])
     budgets = args.budgets_ms or [float(value) for value in planning["budgets_ms"]]
@@ -550,8 +613,19 @@ def main() -> None:
             "budgets_ms": budgets,
             "episodes_per_condition": episodes,
             "seeds": report_seeds,
+            "action_space": planner_config.action_space,
+            "candidate_gripper_schedules": (
+                list(planner_config.gripper_schedules)
+                if planner_config.action_space == "gripper_schedules"
+                else ["translation_only_hold_closed"]
+            ),
+            "settling_penalty": float(planning.get("settling_penalty", 0.0)),
+            "settling_steps": int(planning.get("settling_steps", 2)),
             "cost": (
                 "final visible primary-object centroid distance to task goal plus "
+                "late-horizon centroid-motion settling penalty plus action penalty"
+                if float(planning.get("settling_penalty", 0.0)) > 0
+                else "final visible primary-object centroid distance to task goal plus "
                 "action penalty"
             ),
             "predictor_inputs": (
@@ -581,6 +655,12 @@ def main() -> None:
             ),
             "only_first_action_executed": all(
                 len(record["cycles"]) == record["control_cycles"] for record in records
+            ),
+            "valid_executable_7d_actions": _valid_executed_actions(records),
+            "shared_gripper_schedule_library": bool(
+                planner_config.action_space == "translation_only"
+                or set(planner_config.gripper_schedules)
+                == set(DEFAULT_GRIPPER_SCHEDULES)
             ),
             "metrics_are_finite": all(
                 np.isfinite(condition[name])

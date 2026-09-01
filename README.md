@@ -447,6 +447,8 @@ The additional pre-submission experiments are frozen in
 [`docs/submission_protocol_v1.md`](docs/submission_protocol_v1.md), with the
 machine-readable contract in `configs/submission_protocol_v1.toml`. New results use the
 versioned `artifacts/submission_v1/` namespace; the initial study remains unchanged.
+The corrected discrete gripper schedules and settling cost are documented in
+[`docs/gripper_aware_mpc.md`](docs/gripper_aware_mpc.md).
 
 Freeze the protocol before launching the expensive run. At minimum, define:
 
